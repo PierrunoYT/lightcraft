@@ -1,5 +1,18 @@
 # What's new in LightCraft
 
+## 2026-10-18
+
+### Smaller fixes
+- Exported file names are valid on Windows: a title with `?`, quotes or `|`, a trailing dot, or a name such as `CON`
+  no longer makes the export fail (issue #2140).
+- A JPEG export whose caption, keywords or camera notes don't fit the file's metadata block is written without that
+  block (with a note in the log) instead of failing.
+- Importing a Lightroom catalog works on drives without hard links (exFAT, FAT and some network shares).
+- Two copies of LightCraft writing one library on a share that can't lock no longer risk a mixed catalog snapshot,
+  and a second damaged-log copy no longer replaces the first.
+- A download token is sent only to the host and port the download started at, and files without a pinned checksum
+  are fetched over https only.
+
 ## 2026-10-14
 
 ### Lightroom radial masks on the right side
