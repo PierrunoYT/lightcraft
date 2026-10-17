@@ -20,8 +20,9 @@ const CONTROL_LIMIT: usize = 16 * 1024;
 const RESPONSE_LIMIT: usize = 4 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(9 * 60);
 pub const ENV: &str = "LIGHTCRAFT_SAM3_REMOTE";
-/// The token both ends share (the worker prints a new one when it isn't set).
-pub const TOKEN_ENV: &str = "LIGHTCRAFT_SAM3_TOKEN";
+/// The token both ends share (the worker prints a new one when it isn't set). Not
+/// `LIGHTCRAFT_SAM3_TOKEN`: that is the bearer token for a gated download mirror.
+pub const TOKEN_ENV: &str = "LIGHTCRAFT_SAM3_WORKER_TOKEN";
 /// Shortest token accepted.
 pub const MIN_TOKEN: usize = 16;
 /// How long a peer has to complete the handshake.

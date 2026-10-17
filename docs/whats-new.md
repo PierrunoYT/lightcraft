@@ -4,7 +4,7 @@
 
 ### The remote SAM 3 worker needs a token
 - The SAM 3 worker for remote Metal inference and LightCraft now prove to each other that they share a token,
-  `LIGHTCRAFT_SAM3_TOKEN`, before a photo is sent (issue #2134). Before, any process on the worker Mac could use the
+  `LIGHTCRAFT_SAM3_WORKER_TOKEN`, before a photo is sent (issue #2134). Before, any process on the worker Mac could use the
   worker, and one listening on the editor's port while the SSH tunnel was down received the photo. The worker
   prints a token when none is set; see AI masks → Remote Metal inference. A connection error no longer stops the
   worker, and a peer that says nothing no longer holds it up.

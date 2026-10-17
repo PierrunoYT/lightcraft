@@ -50,17 +50,17 @@ as described below, then run:
 
 ```sh
 cargo build --release --locked -p lightcraft-segment --bin lightcraft-sam3-worker
-export LIGHTCRAFT_SAM3_TOKEN="$(openssl rand -hex 16)"   # or any secret of 16+ characters
+export LIGHTCRAFT_SAM3_WORKER_TOKEN="$(openssl rand -hex 16)"   # or any secret of 16+ characters
 target/release/lightcraft-sam3-worker "$HOME/Library/Application Support/LightCraft/models/sam3" 127.0.0.1:8793
 ```
 
-Without `LIGHTCRAFT_SAM3_TOKEN` the worker makes up a token for the run and prints it. On the
+Without `LIGHTCRAFT_SAM3_WORKER_TOKEN` the worker makes up a token for the run and prints it. On the
 editing computer, start an SSH tunnel in one terminal and LightCraft in another, with the same
 token:
 
 ```sh
 ssh -N -T -o ExitOnForwardFailure=yes -L 127.0.0.1:8793:127.0.0.1:8793 user@your-mac
-LIGHTCRAFT_SAM3_TOKEN=<the token> LIGHTCRAFT_SAM3_REMOTE=127.0.0.1:8793 lightcraft
+LIGHTCRAFT_SAM3_WORKER_TOKEN=<the token> LIGHTCRAFT_SAM3_REMOTE=127.0.0.1:8793 lightcraft
 ```
 
 Object clicks, Describe prompts, and detail refinement use the remote worker. Only the
