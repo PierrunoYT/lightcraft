@@ -208,7 +208,14 @@ mod tests {
             writer.write_all(&reply).unwrap();
             writer.shutdown(std::net::Shutdown::Write).unwrap();
             let mut extra = String::new();
-            assert_eq!(reader.read_line(&mut extra).unwrap(), 0, "request was resent on the same connection");
+            // the client hanging up: an orderly end, or on Windows a reset when it closes with the reply
+            // unread (WSAECONNRESET); either way nothing more came (issue #2140)
+            match reader.read_line(&mut extra) {
+                Ok(n) => assert_eq!(n, 0, "request was resent on the same connection"),
+                Err(e) => {
+                    assert!(matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted), "{e}")
+                }
+            }
             listener
         });
         let mut remote = Remote::lazy(&addr);
