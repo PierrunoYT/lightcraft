@@ -221,8 +221,10 @@ pub fn write_new_unique(candidates: &mut dyn Iterator<Item = PathBuf>, data: &[u
     r
 }
 
-/// Give the complete temp file `tmp` the name `path`, unless that is taken.
-fn publish_new(tmp: &Path, path: &Path) -> io::Result<()> {
+/// Give the complete temp file `tmp` the name `path`, unless that is taken (`AlreadyExists`): a hard
+/// link, or where the volume has none (FAT/exFAT, some shares) an exclusive placeholder renamed over.
+/// After a link `tmp` is a second name of the file, after a rename it is gone.
+pub fn publish_new(tmp: &Path, path: &Path) -> io::Result<()> {
     match fs::hard_link(tmp, path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(e),
