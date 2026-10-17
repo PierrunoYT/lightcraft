@@ -57,15 +57,29 @@ pub type Rgb32f = Image<[f32; 3]>;
 pub type Rgba8 = Image<[u8; 4]>;
 pub type Plane = Image<f32>;
 
-impl<T: Copy + Default> Image<T> {
-    pub fn new(width: usize, height: usize) -> Self {
-        Self { width, height, data: vec![T::default(); width * height] }
+/// `width` × `height`, or 0 × 0 when the pixel count overflows `usize` (issue #2140): an image's
+/// size always matches its data, so indexing it never wraps.
+fn checked_dims(width: usize, height: usize) -> (usize, usize, usize) {
+    match width.checked_mul(height) {
+        Some(n) => (width, height, n),
+        None => (0, 0, 0),
     }
+}
+
+impl<T: Copy + Default> Image<T> {
+    /// A `width` × `height` image of default pixels (0 × 0 when the pixel count overflows `usize`).
+    pub fn new(width: usize, height: usize) -> Self {
+        let (width, height, n) = checked_dims(width, height);
+        Self { width, height, data: vec![T::default(); n] }
+    }
+    /// A `width` × `height` image of `v` (0 × 0 when the pixel count overflows `usize`).
     pub fn filled(width: usize, height: usize, v: T) -> Self {
-        Self { width, height, data: vec![v; width * height] }
+        let (width, height, n) = checked_dims(width, height);
+        Self { width, height, data: vec![v; n] }
     }
     pub fn from_fn(width: usize, height: usize, f: impl Fn(usize, usize) -> T) -> Self {
-        let mut data = Vec::with_capacity(width * height);
+        let (width, height, n) = checked_dims(width, height);
+        let mut data = Vec::with_capacity(n);
         for y in 0..height {
             for x in 0..width {
                 data.push(f(x, y));
@@ -77,12 +91,12 @@ impl<T: Copy + Default> Image<T> {
     pub fn get(&self, x: usize, y: usize) -> T {
         self.data[y * self.width + x]
     }
-    /// Clamped access (edge extension).
+    /// Clamped access (edge extension); the default pixel for an empty image.
     #[inline]
     pub fn get_clamped(&self, x: isize, y: isize) -> T {
-        let x = x.clamp(0, self.width as isize - 1) as usize;
-        let y = y.clamp(0, self.height as isize - 1) as usize;
-        self.data[y * self.width + x]
+        let x = x.clamp(0, (self.width as isize - 1).max(0)) as usize;
+        let y = y.clamp(0, (self.height as isize - 1).max(0)) as usize;
+        self.data.get(y * self.width + x).copied().unwrap_or_default()
     }
     #[inline]
     pub fn set(&mut self, x: usize, y: usize, v: T) {
@@ -277,6 +291,19 @@ impl Rgba8 {
 mod tests {
     use super::*;
     use lightcraft_geom::Orientation;
+
+    /// A size whose pixel count overflows gives an empty image, not a wrapped one; clamped reads of
+    /// an empty image give the default instead of panicking in `clamp(0, -1)` (issue #2140).
+    #[test]
+    fn overflowing_sizes_and_empty_images_are_safe() {
+        for img in [Plane::new(usize::MAX, 3), Plane::filled(3, usize::MAX, 1.0), Plane::from_fn(usize::MAX / 2, 3, |_, _| 1.0)] {
+            assert_eq!((img.width, img.height, img.data.len()), (0, 0, 0));
+        }
+        let empty = Plane::new(0, 5);
+        assert_eq!((empty.get_clamped(0, 0), empty.get_clamped(-3, 9)), (0.0, 0.0));
+        let one = Plane::filled(1, 1, 2.0);
+        assert_eq!((one.get_clamped(-5, 5), one.get_clamped(isize::MAX, isize::MIN)), (2.0, 2.0));
+    }
 
     /// A sample at an infinite coordinate (the inverse mapping of a crop of no size) cast to
     /// isize::MAX, and its right / lower neighbour overflowed (a panic where overflow is checked):
