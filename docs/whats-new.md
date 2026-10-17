@@ -1,5 +1,15 @@
 # What's new in LightCraft
 
+## 2026-10-17
+
+### Links in a library folder are never followed
+- LightCraft no longer writes, cuts back or copies a file through a link that someone planted in a library folder
+  (issue #2122). In a shared or synced library, or one unpacked from an archive, a link named like the lock note,
+  `catalog.log` or `prefs.json` could have LightCraft overwrite or empty a file elsewhere, or copy a private file
+  into the library. Such a library now opens with a clear error (or, for the lock, unprotected) and the file the
+  link points to is left alone. The same goes for sidecar backups, imported profiles, the face index and the
+  thumbnail cache.
+
 ## 2026-10-14
 
 ### Lightroom radial masks on the right side

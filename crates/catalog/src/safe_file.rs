@@ -24,6 +24,11 @@
 //!   links, an exclusive create that claims the name, then a rename over that placeholder).
 //! - [`same_file`] tells whether two paths name the same file on disk (device + inode on Unix,
 //!   resolved paths elsewhere), for "is this target an original?" checks.
+//! - [`open_existing`], [`open_or_create`] and [`read_no_follow`] open a file in place (to append,
+//!   cut or read it) **never through a link** planted at its name, nor a FIFO or a device: a
+//!   library or photo folder may be shared, synced or unpacked from an archive, and a link there
+//!   would have the write land in, or the read copy, a file elsewhere (issue #2122). The replacing
+//!   writes above are safe already: a rename replaces a link, it doesn't follow it.
 
 use std::cell::Cell;
 use std::fs::{self, File, OpenOptions};
@@ -267,6 +272,73 @@ fn same_content(path: &Path, data: &[u8]) -> io::Result<bool> {
     }
 }
 
+/// The error for a name that is a link, or not a regular file (a FIFO, a device, a folder).
+fn not_plain(path: &Path) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, format!("{} is a link or not a regular file: not opened", path.display()))
+}
+
+/// Windows: open a reparse point (a symbolic link or junction) itself rather than its target, so
+/// a link swapped in after the check is opened as the link and refused
+/// (`FILE_FLAG_OPEN_REPARSE_POINT`).
+#[cfg(windows)]
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+/// Open the existing regular file `path` with `opts`, never through a link at that name: a link,
+/// a FIFO (whose open would block) or a device is refused (`InvalidInput`), and a missing file is
+/// `NotFound`. Between the check and the open a link could be swapped in; the opened file is
+/// checked to be the one looked at (same device and inode on Unix; on Windows the link itself is
+/// opened, and refused).
+pub fn open_existing(path: &Path, opts: &OpenOptions) -> io::Result<File> {
+    let before = fs::symlink_metadata(path)?;
+    if !before.file_type().is_file() {
+        return Err(not_plain(path));
+    }
+    let mut opts = opts.clone();
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        opts.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let f = opts.open(path)?;
+    let after = f.metadata()?;
+    #[cfg(unix)]
+    let same = {
+        use std::os::unix::fs::MetadataExt;
+        after.dev() == before.dev() && after.ino() == before.ino()
+    };
+    #[cfg(not(unix))]
+    let same = after.file_type().is_file();
+    if !same {
+        return Err(not_plain(path));
+    }
+    Ok(f)
+}
+
+/// [`open_existing`], or when nothing is at `path` a new file created exclusively (`create_new`),
+/// so a link planted there meanwhile is refused rather than followed.
+pub fn open_or_create(path: &Path, opts: &OpenOptions) -> io::Result<File> {
+    match open_existing(path, opts) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let mut create = opts.clone();
+            create.create_new(true);
+            match create.open(path) {
+                // created by someone else since: open that, by the same rules
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => open_existing(path, opts),
+                r => r,
+            }
+        }
+        r => r,
+    }
+}
+
+/// The content of the regular file `path`, never read through a link ([`open_existing`]).
+pub fn read_no_follow(path: &Path) -> io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut b = Vec::new();
+    open_existing(path, OpenOptions::new().read(true))?.read_to_end(&mut b)?;
+    Ok(b)
+}
+
 /// Do `a` and `b` name the same existing file (through links, `..`, case-insensitive names)?
 pub fn same_file(a: &Path, b: &Path) -> bool {
     let (Ok(ma), Ok(mb)) = (fs::metadata(a), fs::metadata(b)) else { return false };
@@ -408,5 +480,102 @@ mod tests {
         assert!(!same_file(&p, &d.join("y.jpg")));
         assert!(!same_file(&p, &d.join("missing.jpg")));
         let _ = fs::remove_dir_all(&d);
+    }
+
+    /// What can't be a link (Windows test runs can't make one): a folder at the name is refused, a
+    /// missing file is `NotFound`, and `open_or_create` makes the file once and then opens it.
+    #[test]
+    fn opening_in_place_takes_regular_files_only() {
+        let d = temp("in-place");
+        let f = d.join("catalog.log");
+        assert_eq!(read_no_follow(&f).unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(open_existing(&f, OpenOptions::new().append(true)).unwrap_err().kind(), io::ErrorKind::NotFound);
+        open_or_create(&f, OpenOptions::new().append(true)).unwrap().write_all(b"a").unwrap();
+        open_or_create(&f, OpenOptions::new().append(true)).unwrap().write_all(b"b").unwrap();
+        assert_eq!(read_no_follow(&f).unwrap(), b"ab");
+        fs::create_dir(d.join("sub")).unwrap();
+        for r in [read_no_follow(&d.join("sub")).map(|_| ()), open_or_create(&d.join("sub"), OpenOptions::new().append(true)).map(|_| ())] {
+            assert_eq!(r.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        }
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Links planted in a library folder are never written, cut or read through (issue #2122):
+    /// the lock owner note, the lock itself, `catalog.log` (appended to and cut back by the
+    /// journal) and `prefs.json` (read, and copied aside when damaged). Each target keeps its bytes.
+    #[cfg(unix)]
+    #[test]
+    fn links_in_a_library_folder_are_never_followed() {
+        use crate::store::{FsStore, Store};
+        use std::os::unix::fs::symlink;
+        let d = temp("library-links");
+        let outside = temp("library-links-outside");
+        let victim = |name: &str| {
+            let v = outside.join(name);
+            fs::write(
+                &v, b"keep
+",
+            )
+            .unwrap();
+            v
+        };
+        let owner = victim("owner");
+        symlink(&owner, d.join(crate::lock::OWNER)).unwrap();
+        {
+            let lock = crate::lock::LibraryLock::acquire(&d, "test").unwrap();
+            assert!(lock.held());
+            assert!(!fs::symlink_metadata(d.join(crate::lock::OWNER)).unwrap().file_type().is_symlink(), "the link was replaced by the note");
+        }
+        assert_eq!(
+            fs::read(&owner).unwrap(),
+            b"keep
+"
+        );
+
+        // a lock file linked elsewhere is not created or locked there: the library opens unprotected
+        let d2 = temp("library-links-lock");
+        let missing = outside.join("created-by-lock");
+        symlink(&missing, d2.join(crate::lock::LOCK)).unwrap();
+        assert!(!crate::lock::LibraryLock::acquire(&d2, "test").unwrap().held());
+        assert!(!missing.exists(), "nothing was created through the link");
+
+        let log = victim("log");
+        symlink(&log, d.join("catalog.log")).unwrap();
+        let prefs = victim("prefs");
+        symlink(&prefs, d.join("prefs.json")).unwrap();
+        let mut store = FsStore::open(&d).unwrap();
+        assert!(store.truncate("catalog.log", 0).is_err());
+        assert!(
+            store
+                .append(
+                    "catalog.log",
+                    b"[1]
+"
+                )
+                .is_err()
+        );
+        assert!(store.read("catalog.log").is_err());
+        assert!(store.read("prefs.json").is_err(), "refused: a damaged prefs.json is copied aside");
+        assert_eq!(
+            (fs::read(&log).unwrap(), fs::read(&prefs).unwrap()),
+            (
+                b"keep
+"
+                .to_vec(),
+                b"keep
+"
+                .to_vec()
+            )
+        );
+        // the journal refuses the library rather than cutting the log's target back
+        assert!(crate::journal::Journal::open(Box::new(FsStore::open(&d).unwrap())).is_err());
+        assert_eq!(
+            fs::read(&log).unwrap(),
+            b"keep
+"
+        );
+        for dir in [&d, &d2, &outside] {
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 }

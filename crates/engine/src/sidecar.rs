@@ -407,7 +407,8 @@ fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
 /// Copy `path` to a new `<name>.bak-<stamp>` (`-1`, `-2`… if taken; never overwriting).
 fn backup(path: &Path, stamp: &str) -> std::io::Result<PathBuf> {
     use std::io::Write;
-    let bytes = std::fs::read(path)?;
+    // never a link's target: a sidecar linked to a private file would be copied next to the photo (issue #2122)
+    let bytes = lightcraft_catalog::safe_file::read_no_follow(path)?;
     let stamp: String = stamp.chars().filter(char::is_ascii_alphanumeric).collect();
     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     for k in 0..1000 {
@@ -911,6 +912,28 @@ mod tests {
             &mut v,
         );
         assert_eq!(v, vec![PhotoId(1), PhotoId(3)]);
+    }
+
+    /// A sidecar that is a link to a private file is not copied into a `.bak` next to the photo
+    /// (issue #2122); a real sidecar is.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_sidecar_is_never_backed_up() {
+        let dir = std::env::temp_dir().join(format!("lightcraft-sidecar-backup-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let secret = dir.join("secret");
+        std::fs::write(&secret, b"private").unwrap();
+        let linked = dir.join("IMG_1.xmp");
+        std::os::unix::fs::symlink(&secret, &linked).unwrap();
+        assert!(super::backup(&linked, "20261017").is_err());
+        let copies = std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains(".bak-")).count();
+        assert_eq!(copies, 0);
+        let real = dir.join("IMG_2.xmp");
+        std::fs::write(&real, b"<x/>").unwrap();
+        let b = super::backup(&real, "20261017").unwrap();
+        assert_eq!(std::fs::read(b).unwrap(), b"<x/>");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

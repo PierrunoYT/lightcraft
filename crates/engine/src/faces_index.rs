@@ -201,7 +201,8 @@ impl Index {
             return Ok(());
         }
         if self.file_matches && !self.rewrite {
-            let mut f = std::fs::OpenOptions::new().append(true).open(&path)?;
+            // not through a link at the name (issue #2122)
+            let mut f = lightcraft_catalog::safe_file::open_existing(&path, std::fs::OpenOptions::new().append(true))?;
             let mut buf = Vec::new();
             for (k, e) in &self.unsaved {
                 buf.extend(self.record(k, e));
@@ -212,9 +213,8 @@ impl Index {
             for (k, e) in &self.entries {
                 buf.extend(self.record(k, e));
             }
-            let part = path.with_extension("part");
-            std::fs::write(&part, &buf)?;
-            std::fs::rename(&part, &path)?;
+            // a fresh temp file renamed over the index: never written through a link (issue #2122)
+            lightcraft_catalog::safe_file::write_atomic_nosync(&path, &buf)?;
             self.file_matches = true;
             self.rewrite = false;
         }
@@ -341,15 +341,15 @@ impl Scanned {
             return Ok(());
         }
         if self.file_matches && !self.rewrite {
-            let mut f = std::fs::OpenOptions::new().append(true).open(&path)?;
+            // not through a link at the name (issue #2122)
+            let mut f = lightcraft_catalog::safe_file::open_existing(&path, std::fs::OpenOptions::new().append(true))?;
             let buf: Vec<u8> = self.unsaved.iter().flat_map(|id| id.to_le_bytes()).collect();
             f.write_all(&buf)?;
         } else {
             let mut buf = self.header();
             buf.extend(self.set.iter().flat_map(|id| id.to_le_bytes()));
-            let part = path.with_extension("part");
-            std::fs::write(&part, &buf)?;
-            std::fs::rename(&part, &path)?;
+            // a fresh temp file renamed over the index: never written through a link (issue #2122)
+            lightcraft_catalog::safe_file::write_atomic_nosync(&path, &buf)?;
             self.file_matches = true;
             self.rewrite = false;
         }

@@ -120,13 +120,15 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
         let file = match &dir {
             Some(d) => {
                 let f = d.join(format!("{}.cube", id.trim_start_matches("lut:")));
-                std::fs::write(&f, &text).map_err(|e| bad(C, format!("{}: {e}", f.display())))?;
+                // replaced, never written through a link at the name (issue #2122)
+                lightcraft_catalog::safe_file::write_atomic(&f, text.as_bytes()).map_err(|e| bad(C, format!("{}: {e}", f.display())))?;
                 f.to_string_lossy().to_string()
             }
             None => {
                 // no library on disk: remember the original (the in-memory session ends with the app)
                 let f = std::env::temp_dir().join(format!("lightcraft-{}.cube", id.trim_start_matches("lut:")));
-                std::fs::write(&f, &text).map_err(|e| bad(C, e.to_string()))?;
+                // the shared temp folder: another user may have put a link at this name
+                lightcraft_catalog::safe_file::write_atomic(&f, text.as_bytes()).map_err(|e| bad(C, e.to_string()))?;
                 f.to_string_lossy().to_string()
             }
         };

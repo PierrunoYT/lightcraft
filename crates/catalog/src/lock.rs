@@ -104,21 +104,24 @@ impl LibraryLock {
             log::warn!("library {}: can't lock {LOCK} ({why}); opening it without protection against a second program", dir.display());
             LibraryLock { dir: dir.to_path_buf(), file: None, held: false }
         };
-        let file = match OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join(LOCK)) {
+        // not through a link at the name, which would create or lock a file elsewhere (issue #2122)
+        let file = match crate::safe_file::open_or_create(&dir.join(LOCK), OpenOptions::new().read(true).write(true)) {
             Ok(f) => f,
             Err(e) => return Ok(unlocked(e)),
         };
         match file.try_lock() {
             Ok(()) => {}
             Err(TryLockError::WouldBlock) => {
-                let owner = std::fs::read(dir.join(OWNER)).ok().and_then(|b| serde_json::from_slice::<LockOwner>(&b).ok());
+                let owner = crate::safe_file::read_no_follow(&dir.join(OWNER)).ok().and_then(|b| serde_json::from_slice::<LockOwner>(&b).ok());
                 return Err(LockError::InUse(owner));
             }
             Err(TryLockError::Error(e)) => return Ok(unlocked(e)),
         }
         let owner = LockOwner::this_process(program);
         if let Ok(json) = serde_json::to_vec_pretty(&owner)
-            && let Err(e) = std::fs::write(dir.join(OWNER), json)
+            // replaced, not written through: a link planted at the name is replaced by the note,
+            // its target left alone (issue #2122)
+            && let Err(e) = crate::safe_file::write_atomic_nosync(&dir.join(OWNER), &json)
         {
             log::warn!("library {}: can't write {OWNER}: {e}", dir.display());
         }
