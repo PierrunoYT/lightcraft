@@ -262,8 +262,14 @@ fn chunked_bodies_and_unpinned_files() {
     let e = run(&[small], &[format!("{}/good", srv.base)], &dir2, &AtomicBool::new(false)).0.unwrap_err().to_string();
     assert!(e.contains("wrong size") || e.contains("more than"), "{e}");
     assert!(!dir2.join("vocab.json").exists() && !part_path(&dir2, "vocab.json").exists());
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&dir2);
+    // over plain http from another computer an unpinned file is refused before connecting (#2140)
+    let dir3 = tmp("unpinned-http");
+    let e = run(&[f], &["http://mirror.invalid/sam3".to_string()], &dir3, &AtomicBool::new(false)).0.unwrap_err().to_string();
+    assert!(e.contains("https only"), "{e}");
+    assert!(is_loopback("localhost") && is_loopback("127.0.0.1") && is_loopback("[::1]") && !is_loopback("10.0.0.1"));
+    for d in [&dir, &dir2, &dir3] {
+        let _ = std::fs::remove_dir_all(d);
+    }
 }
 
 #[test]

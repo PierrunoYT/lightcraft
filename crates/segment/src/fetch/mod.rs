@@ -13,7 +13,8 @@ use std::path::Path;
 ///
 /// `model.safetensors` is pinned to the official checkpoint (Hugging Face LFS SHA-256). The two
 /// tokenizer files are small text files without a pinned hash yet: they are only parsed by the
-/// tokenizer (never executed) and capped in size.
+/// tokenizer (never executed), capped in size, and downloaded only over https (or from
+/// this computer), so a plain-http mirror can't swap them in transit.
 // TODO(maintainer): pin `vocab.json` and `merges.txt` (size + SHA-256) when the files are
 // uploaded to LightCraft's CDN.
 pub const SAM3_FILES: &[FileSpec] = &[

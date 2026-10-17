@@ -280,6 +280,11 @@ fn bearer<'a>(token: Option<&'a str>, url: &Url, origin: (&str, u16)) -> Option<
     token.map(str::trim).filter(|t| !t.is_empty() && url.tls && (url.host.as_str(), url.port) == origin)
 }
 
+/// `host` is this computer (`localhost`, a loopback address).
+fn is_loopback(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost") || host.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
 /// A mirror for messages (no query string: it may hold a token).
 fn short(m: &str) -> String {
     Url::parse(m).map(|u| u.display()).unwrap_or_else(|_| "mirror".into())
@@ -350,6 +355,11 @@ fn fetch_file(f: &FileSpec<'_>, url: &str, dir: &Path, opts: &Options, cancel: &
         let origin = (url.host.clone(), url.port);
         let mut redirects = 0;
         let mut resp = loop {
+            // nothing checks an unpinned file but the connection: https only, also after a redirect, unless the mirror
+            // is this computer itself (issue #2140)
+            if f.sha256.is_none() && !url.tls && !is_loopback(&url.host) {
+                return Err(Fail::NextMirror("a file without a pinned SHA-256 is downloaded over https only".into()));
+            }
             let mut headers = vec![];
             if have > 0 {
                 headers.push(("Range", format!("bytes={have}-")));
