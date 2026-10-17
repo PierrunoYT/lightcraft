@@ -363,6 +363,21 @@ fn cmd_ci(args: &[&str]) -> Result<(), String> {
     steps.push(("parity", Box::new(|| parity::run(&root, false))));
     steps.push(("layers", Box::new(cmd_layers)));
     steps.push(("assets", Box::new(|| assets::run(&root))));
+    steps.push((
+        "deny",
+        Box::new(|| {
+            // licences, sources and advisories of every dependency (`deny.toml`, issue #2127); the
+            // Audit workflow runs it too, so a machine without cargo-deny only skips it here
+            let installed = cargo().args(["deny", "--version"]).output().is_ok_and(|o| o.status.success());
+            if !installed {
+                eprintln!("cargo-deny is not installed (`cargo install --locked cargo-deny`): skipped");
+                return Ok(());
+            }
+            let mut c = cargo();
+            c.args(["deny", "check"]);
+            run(c, "cargo deny check")
+        }),
+    ));
     steps.push(("wasm", Box::new(cmd_wasm)));
 
     let mut results = Vec::new();

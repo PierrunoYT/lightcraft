@@ -1,0 +1,80 @@
+# cargo-deny: licences, sources and security advisories of every dependency (issue #2127).
+# `cargo deny check` runs in `cargo xtask ci` (when cargo-deny is installed) and weekly in
+# .github/workflows/audit.yml. Install: `cargo install --locked cargo-deny`.
+
+[graph]
+all-features = true
+
+[advisories]
+# a vulnerability in any dependency fails; "unmaintained" only for the workspace's own direct
+# dependencies (deep transitive ones are reported by the weekly audit, not blocking)
+unmaintained = "workspace"
+yanked = "deny"
+# Each ignored advisory says why it doesn't reach LightCraft, and when to look again.
+ignore = [
+    # quick-xml 0.38 (lightcraft-meta, lightcraft-lensdb): quadratic duplicate-attribute check and
+    # NsReader namespace growth. The readers use `Reader` with `with_checks(false)` and no
+    # `NsReader`; PR #1464 moves to 0.41.
+    { id = "RUSTSEC-2026-0194", reason = "duplicate-attribute checks are off (with_checks(false)); bump in #1464" },
+    { id = "RUSTSEC-2026-0195", reason = "NsReader is not used; bump in #1464" },
+    # zip 7 (through candle-core, for SAM 3): extraction follows symlinks and keeps set-uid bits.
+    # Nothing calls `extract()`; candle reads archives entry by entry. Fixed in zip 9, which
+    # candle-core has to move to.
+    { id = "RUSTSEC-2026-0367", reason = "ZipArchive::extract is never called (candle-core reads entries)" },
+    { id = "RUSTSEC-2026-0368", reason = "ZipArchive::extract is never called (candle-core reads entries)" },
+    { id = "RUSTSEC-2026-0369", reason = "ZipArchive::extract is never called (candle-core reads entries)" },
+    # rustls-webpki 0.102 and rsa come with rustls-rustcrypto (alpha), the pure-Rust crypto
+    # provider for model downloads (ring and aws-lc-rs are C). Certificate path validation is
+    # rustls's own webpki 0.103 (patched); the provider takes only algorithm identifiers from
+    # 0.102, and rsa does signature verification only (no private-key operations, which the
+    # Marvin timing attack needs). Downloads are also SHA-256-pinned. Watch for a provider release.
+    { id = "RUSTSEC-2026-0049", reason = "webpki 0.102 supplies algorithm ids only; validation is webpki 0.103" },
+    { id = "RUSTSEC-2026-0098", reason = "webpki 0.102 supplies algorithm ids only; validation is webpki 0.103" },
+    { id = "RUSTSEC-2026-0099", reason = "webpki 0.102 supplies algorithm ids only; validation is webpki 0.103" },
+    { id = "RUSTSEC-2026-0104", reason = "webpki 0.102 supplies algorithm ids only; validation is webpki 0.103" },
+    { id = "RUSTSEC-2023-0071", reason = "rsa verifies signatures only: no private-key operation to time" },
+]
+
+[licenses]
+# permissive licences (alone, or as one of the choices a crate offers)
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "ISC",
+    "Zlib",
+    "Unlicense",
+    "CC0-1.0",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.9
+exceptions = [
+    # Boost Software License: permissive (Windows clipboard)
+    { allow = ["BSL-1.0"], crate = "clipboard-win" },
+    { allow = ["BSL-1.0"], crate = "error-code" },
+    # the Mozilla root certificates' data licence (permissive)
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
+    # the libjpeg licence of the code jpeg-encoder derives from (permissive, attribution)
+    { allow = ["IJG"], crate = "jpeg-encoder" },
+    # LLVM's libFuzzer (fuzzing builds only)
+    { allow = ["NCSA"], crate = "libfuzzer-sys" },
+    # egui's built-in fonts (the UI sets Inter as its font)
+    { allow = ["OFL-1.1", "Ubuntu-font-1.0"], crate = "epaint_default_fonts" },
+]
+
+[licenses.private]
+# the workspace's own crates
+ignore = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = ["https://github.com/storytold/craft-libs"]

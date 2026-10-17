@@ -1,5 +1,13 @@
 # What's new in LightCraft
 
+## 2026-10-17
+
+### Dependencies are audited
+- Model downloads use rustls 0.23.46, which fixes four advisories in the TLS library, among them a server able to make
+  a download decompress up to 1 GB of certificate data before it is checked (issue #2127). Every dependency's licence,
+  source and known advisories are now checked (`deny.toml`) on each change and weekly; the advisories still in the
+  tree are listed there with why they don't reach LightCraft.
+
 ## 2026-10-14
 
 ### Lightroom radial masks on the right side
