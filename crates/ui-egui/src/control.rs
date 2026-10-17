@@ -349,6 +349,14 @@ pub fn handle(app: &mut LightcraftApp, ctx: &egui::Context, req: &ControlRequest
             lightcraft_develop::presets::deep_merge(&mut v, p);
             match serde_json::from_value::<crate::UiState>(v) {
                 Ok(mut u) => {
+                    // the programs Edit In starts are the user's to choose, in Settings (issue #2115)
+                    let (now, asked) = (&app.ui.settings, &u.settings);
+                    if asked.external_editor != now.external_editor || asked.photocraft_path != now.photocraft_path {
+                        return err(
+                            "ui.set: the editors in Settings ▸ External Editing (`externalEditor`, `photocraftPath`) can only be set there, by hand"
+                                .to_string(),
+                        );
+                    }
                     if let Err(error) = crate::docking::set_widths(&mut u, p) {
                         return err(error);
                     }

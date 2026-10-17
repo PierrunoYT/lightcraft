@@ -151,12 +151,14 @@ fn general_tab(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
     check(ui, "settings.confirmDelete", &mut app.ui.settings.confirm_delete, "Confirm before moving photos to Recently Deleted");
     check(ui, "settings.askBeforeMove", &mut app.ui.settings.ask_before_move, "Confirm before moving photos to another folder on disk");
     heading(ui, t, crate::i18n::tr("External Editing"));
+    let before = app.ui.settings.photocraft_path.clone();
     row(ui, t, crate::i18n::tr("PhotoCraft"), |ui| {
         crate::text_field::TextField::singleline("field:photocraftPath", &mut app.ui.settings.photocraft_path)
             .hint(crate::i18n::tr("Found automatically"))
             .width(220.0)
             .show(ui);
     });
+    by_hand_only(app, ui.ctx(), |s| &mut s.photocraft_path, before);
     edit_file_rows(ui, t, "photocraftFile", &mut app.ui.settings.photocraft_file);
     hint(
         ui,
@@ -165,12 +167,14 @@ fn general_tab(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
             "Photo ▸ Edit In ▸ Edit in PhotoCraft (⇧⌘E, or right-click a photo) renders a copy with your edits, stacks it with the original and opens it in PhotoCraft. Save there and the copy updates here. As PSD, PhotoCraft saves straight back to it. Leave the location empty unless you use a portable copy.",
         ),
     );
+    let before = app.ui.settings.external_editor.clone();
     row(ui, t, crate::i18n::tr("Other editor"), |ui| {
         crate::text_field::TextField::singleline("field:externalEditor", &mut app.ui.settings.external_editor)
             .hint(crate::i18n::tr("System default"))
             .width(220.0)
             .show(ui);
     });
+    by_hand_only(app, ui.ctx(), |s| &mut s.external_editor, before);
     edit_file_rows(ui, t, "externalFile", &mut app.ui.settings.external_file);
     hint(ui, t, crate::i18n::tr("Edit in Other Editor (⌥⌘E) opens the copy in this application (an app name on macOS, a program path elsewhere)."));
     hint(
@@ -183,6 +187,16 @@ fn general_tab(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
 }
 
 /// The file Edit In hands an editor: format, colour space and bit depth (`button:{id}Format-…`).
+/// A field naming a program Edit In starts takes the user's own typing only: an edit made in a
+/// frame of injected input (the control channel's `ui.text` / `ui.key`, an MCP agent's
+/// `type_text`) is undone, as `ui.set` refuses it (issue #2115).
+fn by_hand_only(app: &mut LightcraftApp, ctx: &egui::Context, field: fn(&mut crate::state::AppSettings) -> &mut String, before: String) {
+    if app.synthetic_frame && *field(&mut app.ui.settings) != before {
+        *field(&mut app.ui.settings) = before;
+        app.toast(ctx, crate::i18n::tr("The editors Edit In starts can only be typed in by hand"));
+    }
+}
+
 fn edit_file_rows(ui: &mut egui::Ui, t: &Tokens, id: &str, file: &mut crate::state::EditFile) {
     use crate::state::{EditFormat, EditSpace};
     row(ui, t, "", |ui| {

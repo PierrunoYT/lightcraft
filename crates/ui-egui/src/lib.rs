@@ -382,6 +382,9 @@ pub struct LightcraftApp {
     synthetic_mods: egui::Modifiers,
     /// Clear `synthetic_mods` on the next frame.
     synthetic_mods_release: bool,
+    /// This frame's input carries injected events (control channel, MCP `--connect`): what the
+    /// user alone may set (the editors Edit In starts) ignores it.
+    pub(crate) synthetic_frame: bool,
     styled: bool,
     /// The language the installed fonts were built for: the CJK fallback order follows the UI
     /// language's script, so switching language reinstalls them.
@@ -509,6 +512,7 @@ impl LightcraftApp {
             pending_picks: vec![],
             synthetic_mods: egui::Modifiers::NONE,
             synthetic_mods_release: false,
+            synthetic_frame: false,
             styled: false,
             font_language: i18n::Locale::En,
             chinese_font: None,
@@ -1324,6 +1328,7 @@ impl LightcraftApp {
 
     /// Inject synthetic events (pointer events one per frame; key sequences up to the release).
     pub fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
+        self.synthetic_frame = false;
         // the frame after a synthetic release / key: modifiers back up
         if std::mem::take(&mut self.synthetic_mods_release) && self.synthetic_mods != egui::Modifiers::NONE {
             self.synthetic_mods = egui::Modifiers::NONE;
@@ -1355,6 +1360,7 @@ impl LightcraftApp {
             self.synthetic_mods_release = ends;
         }
         raw.events.extend(self.synthetic.drain(..n));
+        self.synthetic_frame = true;
     }
 
     /// Lights Out: veil everything but the photo (the loupe's image, or the grid / Compare /

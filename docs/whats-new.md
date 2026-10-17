@@ -1,5 +1,13 @@
 # What's new in LightCraft
 
+## 2026-10-17
+
+### Edit In starts only the editor you chose
+- Edit In and Open Original in Other Editor start only the editor you set in Settings ▸ External Editing (or
+  PhotoCraft) (issue #2115). A script or AI agent driving LightCraft through the control channel or MCP could name
+  any program in the command, or set it through `ui.set` or by typing into those Settings fields, and have it started
+  with your photos' paths. It now gets an error and nothing starts.
+
 ## 2026-10-14
 
 ### Lightroom radial masks on the right side

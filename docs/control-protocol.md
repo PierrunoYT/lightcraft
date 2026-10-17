@@ -75,7 +75,7 @@ filmstrip is visible.
 | `ui.clipboard` | `{action: cut\|copy\|paste, text?}` | Cut, copy or paste in the focused text field, as the system does for ⌘X / ⌘C / ⌘V; `paste` pastes `text`, or the system clipboard without it. Refused when no text field has the focus (outside one, ⌘C / ⌘V are the commands `develop.copy` / `develop.paste`). In the desktop app cut and copy write the system clipboard. `ui.inspect` → `copied` is the text the UI last put on the clipboard |
 | `ui.scroll` | `{dx, dy, cmd?, ctrl?, shift?, alt?}` | Wheel / two-finger scroll at the current pointer; pans over the image, modifier-scroll zooms |
 | `ui.zoom` | `{factor}` | Pinch zoom at the current pointer (positive scale multiplier; 1 = unchanged). Position it first with `ui.move` or `ui.hoverWidget` |
-| `ui.set` | partial UI state, e.g. `{"view": "detail"}` | Resulting UI state |
+| `ui.set` | partial UI state, e.g. `{"view": "detail"}` | Resulting UI state. Refuses a change to `settings.externalEditor` or `settings.photocraftPath`: the programs Edit In starts are set by hand in Settings ▸ External Editing (typing injected into those fields is undone too), and a command's `app` may only repeat that editor or name PhotoCraft |
 | `ui.dialog.confirm` / `ui.dialog.cancel` | — | Close the open dialog |
 | `ui.resize` | `{width, height}` | Resize the window |
 | `ui.zoomFactor` | `{factor}` | Set the interface scale (0.5–3; egui's zoom keys are off, Cmd+= / Cmd+- zoom the photo) |

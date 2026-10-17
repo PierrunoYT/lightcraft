@@ -1040,6 +1040,63 @@ fn edit_in_external_editor_opens_the_copy() {
     h.settle(SETTLE);
 }
 
+/// Edit In starts only the editors set in Settings ▸ External Editing: a command's `app`, `ui.set`
+/// and typing injected through the control channel (or an MCP agent) can't name another program
+/// to run with the photos' paths (issue #2115).
+#[test]
+fn edit_in_never_starts_a_program_a_client_names() {
+    let dir = std::env::temp_dir().join(format!("lc-ui-ext-app-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let opened: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>> = Default::default();
+    let o = opened.clone();
+    let services = Services {
+        png: None,
+        open_with: Some(Box::new(move |path: &str, app: &str| {
+            o.lock().unwrap().push((path.to_string(), app.to_string()));
+            Ok(())
+        })),
+        ..Default::default()
+    };
+    let app = LightcraftApp::new(lightcraft_engine::Session::with_demo().with_fs(), services);
+    // tall enough that both Settings fields are on screen without scrolling
+    let mut h = Headless::new(app, [1400.0, 1400.0], 1.0);
+    h.app.ui.settings.external_editor = "Affinity Photo".into();
+    let n = h.app.session.catalog.len();
+    for command in ["photo.editInExternal", "photo.editInPhotoCraft"] {
+        let r = h.request("engine.execute", json!({"command": command, "params": {"dir": dir.to_string_lossy(), "app": "/bin/sh"}}), T);
+        assert_eq!(r["ok"], false, "{command}: {r}");
+        assert!(r.to_string().contains("Settings ▸ External Editing"), "{r}");
+    }
+    assert_eq!((h.app.session.catalog.len(), opened.lock().unwrap().len()), (n, 0), "no copy made, nothing started");
+    // naming the configured editor is the same as naming none
+    let r =
+        h.request("engine.execute", json!({"command": "photo.editInExternal", "params": {"dir": dir.to_string_lossy(), "app": "Affinity Photo"}}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(opened.lock().unwrap().last().unwrap().1, "Affinity Photo");
+
+    // `ui.set` can't change the editors; the rest of the UI state still can
+    for settings in [json!({"externalEditor": "/bin/sh"}), json!({"photocraftPath": "/tmp/x"})] {
+        let r = h.request("ui.set", json!({"settings": settings}), T);
+        assert_eq!(r["ok"], false, "{r}");
+    }
+    assert_eq!((h.app.ui.settings.external_editor.as_str(), h.app.ui.settings.photocraft_path.as_str()), ("Affinity Photo", ""));
+    assert_eq!(h.request("ui.set", json!({"navigator": false}), T)["ok"], true);
+
+    // nor can typing injected into the Settings fields
+    h.app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "general".into() });
+    h.settle(SETTLE);
+    for field in ["field:externalEditor", "field:photocraftPath"] {
+        assert_eq!(h.request("ui.clickWidget", json!({"id": field}), T)["ok"], true, "{field}");
+        h.settle(SETTLE);
+        assert_eq!(h.request("ui.text", json!({"text": "/bin/sh"}), T)["ok"], true);
+        h.settle(SETTLE);
+    }
+    assert_eq!((h.app.ui.settings.external_editor.as_str(), h.app.ui.settings.photocraft_path.as_str()), ("Affinity Photo", ""));
+    let _ = std::fs::remove_dir_all(&dir);
+    h.settle(SETTLE);
+}
+
 /// Edit in PhotoCraft: a PSD copy (what PhotoCraft saves back to), handed to "PhotoCraft" for
 /// the host to find; when the host can't find it, no copy is made.
 #[test]
@@ -1142,10 +1199,20 @@ fn open_original_in_external_editor_hands_over_the_raw_itself() {
     assert_eq!(std::fs::read(&a_path).unwrap(), b"raw sensor data", "the original is left as it is");
     assert!(std::fs::read_dir(&dir).unwrap().count() == 2, "nothing is written next to the originals");
 
-    // the editor can be named per call; the active photo must have a file for the menu
-    let r = exec(&mut h, "photo.openOriginalInExternal", json!({"ids": [a.0], "app": "/opt/dxo"}));
+    // `app` may repeat the configured editor or name PhotoCraft, never another program (issue #2115)
+    let r = exec(&mut h, "photo.openOriginalInExternal", json!({"ids": [a.0], "app": "DxO PhotoLab"}));
     assert_eq!(r["opened"][0]["path"], a_path.as_str());
-    assert_eq!(opened.lock().unwrap().last().unwrap().1, "/opt/dxo");
+    assert_eq!(opened.lock().unwrap().last().unwrap().1, "DxO PhotoLab");
+    exec(&mut h, "photo.openOriginalInExternal", json!({"ids": [a.0], "app": "photocraft"}));
+    assert_eq!(opened.lock().unwrap().last().unwrap().1, crate::state::PHOTOCRAFT);
+    let calls = opened.lock().unwrap().len();
+    for other in [json!("/opt/dxo"), json!("/bin/sh"), json!(r"C:\Windows\System32\cmd.exe"), json!(""), json!(["DxO PhotoLab"])] {
+        let r = h.request("engine.execute", json!({"command": "photo.openOriginalInExternal", "params": {"ids": [a.0], "app": other}}), T);
+        assert_eq!(r["ok"], false, "{other}: {r}");
+        assert!(r.to_string().contains("Settings ▸ External Editing"), "{r}");
+    }
+    assert_eq!(opened.lock().unwrap().len(), calls, "no program named by a client was started");
+    // the active photo must have a file for the menu
     exec(&mut h, "library.select", json!({"ids": [a.0]}));
     assert!(crate::menus::ui_enabled(&h.app, "photo.openOriginalInExternal"));
     exec(&mut h, "library.select", json!({"ids": [demo.0]}));

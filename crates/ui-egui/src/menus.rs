@@ -2300,7 +2300,13 @@ fn edit_in(app: &mut LightcraftApp, ctx: &egui::Context, p: &Value, photocraft: 
     } else {
         (settings.external_file, settings.external_editor.clone())
     };
-    let editor = p.get("app").and_then(Value::as_str).map_or(configured, str::to_string);
+    let editor = match requested_editor(p, configured) {
+        Ok(editor) => editor,
+        Err(e) => {
+            app.toast(ctx, e.clone());
+            return Err(e);
+        }
+    };
     if let Some(check) = app.services.check_editor.as_ref()
         && let Err(e) = check(&editor)
     {
@@ -2337,6 +2343,22 @@ fn edit_in(app: &mut LightcraftApp, ctx: &egui::Context, p: &Value, photocraft: 
         _ => app.toast(ctx, crate::i18n::tr_format!("{n} photos opened for editing; each is stacked with its original", n = copies.len())),
     }
     Ok(r)
+}
+
+/// The editor an Edit In command opens: the one set in Settings ▸ External Editing (`configured`).
+/// The command's `app` may repeat it or name PhotoCraft, never another program: whoever sends
+/// commands (a control-channel client, an MCP agent steered by a photo's metadata) would choose
+/// which executable starts, with the photos' paths as its arguments (issue #2115).
+fn requested_editor(p: &Value, configured: String) -> Result<String, String> {
+    match p.get("app") {
+        None | Some(Value::Null) => Ok(configured),
+        Some(Value::String(a)) if a.trim() == configured.trim() => Ok(configured),
+        Some(Value::String(a)) if a.trim().eq_ignore_ascii_case(crate::state::PHOTOCRAFT) => Ok(crate::state::PHOTOCRAFT.to_string()),
+        Some(_) => Err(format!(
+            "`app` may only name PhotoCraft or the editor set in Settings ▸ External Editing ({}); set another editor there",
+            if configured.trim().is_empty() { "the system default" } else { configured.trim() }
+        )),
+    }
 }
 
 /// Most originals one Open Original hands the editor (each starts it once).
@@ -2394,7 +2416,7 @@ fn open_originals(app: &mut LightcraftApp, p: &Value) -> Result<Value, String> {
             format!("nothing to open: none of these photos has its original file ({why})")
         });
     }
-    let editor = p.get("app").and_then(Value::as_str).map_or_else(|| app.ui.settings.external_editor.clone(), str::to_string);
+    let editor = requested_editor(p, app.ui.settings.external_editor.clone())?;
     if let Some(check) = app.services.check_editor.as_ref() {
         check(&editor)?;
     }
