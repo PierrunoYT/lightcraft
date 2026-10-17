@@ -376,3 +376,56 @@ fn a_damaged_process_value_loads_as_v1_with_the_edits() {
     let d = &loaded.photo(id).unwrap().develop;
     assert_eq!((d.process, d.light.exposure), (ProcessVersion::V1, 0.8));
 }
+
+/// Two stores writing the same file at once (two programs on a share that can't lock) each stage in
+/// a file of their own: whatever lands is one whole write, never a mix (issue #2140).
+#[test]
+fn concurrent_writers_never_publish_a_mix() {
+    let dir = std::env::temp_dir().join(format!("lc-journal-two-writers-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let writer = |byte: u8| {
+        let dir = dir.clone();
+        std::thread::spawn(move || {
+            let mut s = FsStore::open(&dir).unwrap();
+            let data = vec![byte; 256 * 1024];
+            for _ in 0..40 {
+                // a rename over a file the other is replacing may fail on Windows; a failed save keeps the old file
+                let _ = s.write_atomic(SNAPSHOT, &data);
+            }
+        })
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let (a, b) = (writer(b'a'), writer(b'b'));
+    for _ in 0..200 {
+        if let Ok(now) = std::fs::read(dir.join(SNAPSHOT)) {
+            assert!(now.iter().all(|&c| c == now[0]) && now.len() == 256 * 1024, "a mixed or short snapshot");
+        }
+    }
+    a.join().unwrap();
+    b.join().unwrap();
+    let left: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+    assert_eq!(left, vec![SNAPSHOT.to_string()], "no staging file is left behind");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Opening a store removes staging files a crashed save left long ago, and leaves a fresh one (another
+/// program's save in progress) and everything else alone.
+#[test]
+fn stale_staging_files_are_removed_on_open() {
+    let dir = std::env::temp_dir().join(format!("lc-journal-stale-staging-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let old = dir.join(".catalog.snap.4242-7.tmp");
+    let fresh = dir.join(".catalog.snap.4243-0.tmp");
+    let other = dir.join(".hidden.tmp");
+    for f in [&old, &fresh, &other] {
+        std::fs::write(f, b"x").unwrap();
+    }
+    let two_hours_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+    for f in [&old, &other] {
+        std::fs::File::options().write(true).open(f).unwrap().set_modified(two_hours_ago).unwrap();
+    }
+    FsStore::open(&dir).unwrap();
+    assert_eq!((old.exists(), fresh.exists(), other.exists()), (false, true, true));
+    let _ = std::fs::remove_dir_all(&dir);
+}

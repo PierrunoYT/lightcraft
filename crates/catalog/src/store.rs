@@ -53,9 +53,18 @@ pub struct FsStore {
 }
 
 impl FsStore {
-    /// Use `dir` (created if missing).
+    /// Use `dir` (created if missing). Staging files a crashed save left over an hour ago are removed
+    /// (a younger one may be another program's save in progress, on a share that can't lock).
     pub fn open(dir: impl AsRef<Path>) -> io::Result<FsStore> {
         std::fs::create_dir_all(dir.as_ref())?;
+        if let Ok(entries) = std::fs::read_dir(dir.as_ref()) {
+            let old = |e: &std::fs::DirEntry| {
+                e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > STALE_STAGING)
+            };
+            for e in entries.flatten().filter(|e| e.file_name().to_str().is_some_and(is_staging_name) && old(e)) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
         Ok(FsStore { dir: dir.as_ref().to_path_buf(), appender: None })
     }
     pub fn dir(&self) -> &Path {
@@ -73,14 +82,37 @@ impl FsStore {
     }
 }
 
-/// A new staging file at `tmp`: whatever is already there (a leftover from a crashed save, or a link) is removed first
-/// (a link itself, never what it points to), then the file is created exclusively, so a write never follows a link
-/// planted at that name into another file (issue #1502).
-fn create_staging(tmp: &std::path::Path) -> io::Result<std::fs::File> {
-    if std::fs::symlink_metadata(tmp).is_ok() {
-        std::fs::remove_file(tmp)?;
+/// How old a staging file must be before [`FsStore::open`] takes it for a crashed save's.
+const STALE_STAGING: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// `.<name>.<pid>-<n>.tmp`: a staging file of [`create_staging`].
+fn is_staging_name(f: &str) -> bool {
+    f.starts_with('.')
+        && f.ends_with(".tmp")
+        && f.rsplit('.').nth(1).is_some_and(|id| id.contains('-') && id.chars().all(|c| c.is_ascii_digit() || c == '-'))
+}
+
+/// A new staging file for `name` in `dir`, named for this process and this write
+/// (`.<name>.<pid>-<n>.tmp`) and created exclusively: two programs writing the same library (on a
+/// share that can't lock, where the library opens unprotected) never share one and publish a mix
+/// (issue #2140), and a link planted at the name is never followed (issue #1502). The name used
+/// before, `<name>.tmp`, is removed if a crashed save left it (a link itself, never its target).
+fn create_staging(dir: &Path, name: &str) -> io::Result<(PathBuf, std::fs::File)> {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let legacy = dir.join(format!("{name}.tmp"));
+    if std::fs::symlink_metadata(&legacy).is_ok() {
+        let _ = std::fs::remove_file(&legacy);
     }
-    std::fs::OpenOptions::new().write(true).create_new(true).open(tmp)
+    for _ in 0..1000 {
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = dir.join(format!(".{name}.{}-{n}.tmp", std::process::id()));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp) {
+            Ok(f) => return Ok((tmp, f)),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("no free staging file name for {name}")))
 }
 
 impl Store for FsStore {
@@ -97,13 +129,13 @@ impl Store for FsStore {
         if self.appender.as_ref().is_some_and(|(n, _)| n == name) {
             self.appender = None;
         }
-        let tmp = self.path(&format!("{name}.tmp"));
-        {
-            let mut f = create_staging(&tmp)?;
-            f.write_all(data)?;
-            f.sync_all()?;
+        let (tmp, mut f) = create_staging(&self.dir, name)?;
+        let written = f.write_all(data).and_then(|()| f.sync_all());
+        drop(f);
+        if let Err(e) = written.and_then(|()| std::fs::rename(&tmp, self.path(name))) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
         }
-        std::fs::rename(&tmp, self.path(name))?;
         self.sync_dir();
         Ok(())
     }
@@ -113,9 +145,9 @@ impl Store for FsStore {
         if self.appender.as_ref().is_some_and(|(n, _)| n == name) {
             self.appender = None;
         }
-        let tmp = self.path(&format!("{name}.tmp"));
+        let (tmp, file) = create_staging(&self.dir, name)?;
         let written = (|| {
-            let mut w = Counter { inner: io::BufWriter::with_capacity(1 << 20, create_staging(&tmp)?), n: 0 };
+            let mut w = Counter { inner: io::BufWriter::with_capacity(1 << 20, file), n: 0 };
             fill(&mut w)?;
             w.flush()?;
             let f = w.inner.into_inner().map_err(|e| e.into_error())?;
@@ -129,7 +161,10 @@ impl Store for FsStore {
                 return Err(e);
             }
         };
-        std::fs::rename(&tmp, self.path(name))?;
+        if let Err(e) = std::fs::rename(&tmp, self.path(name)) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
         self.sync_dir();
         Ok(n)
     }
