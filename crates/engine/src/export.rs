@@ -2167,8 +2167,14 @@ struct Placer<'a> {
     stop_on_error: bool,
 }
 
+/// `a/b`, with the separator `a` already uses: a Windows folder (`C:\Photos\A`) gets `\`, so a path
+/// never mixes the two (issue #2140).
 fn join_path(a: &str, b: &str) -> String {
-    if a.is_empty() { b.to_string() } else { format!("{}/{b}", a.trim_end_matches('/')) }
+    if a.is_empty() {
+        return b.to_string();
+    }
+    let sep = if a.contains('\\') && !a.contains('/') { '\\' } else { '/' };
+    format!("{}{sep}{b}", a.trim_end_matches(['/', '\\']))
 }
 
 impl<'a> Placer<'a> {

@@ -991,7 +991,8 @@ fn same_folder_as_original_exports_next_to_each_photo() {
     let exists = |p: &str| std::path::Path::new(p).exists();
     let files = crate::export::export_batch(&mut s, &ids, &o, &to, &mut crate::export::write_file, &exists).unwrap();
     let written: Vec<&str> = files.iter().map(|f| f["path"].as_str().unwrap()).collect();
-    let mut want = vec![a.join("Exports/IMG_1.jpg").to_string_lossy().to_string(), b.join("Exports/IMG_1.jpg").to_string_lossy().to_string()];
+    let in_exports = |d: &std::path::Path, f: &str| d.join("Exports").join(f).to_string_lossy().to_string();
+    let mut want = vec![in_exports(&a, "IMG_1.jpg"), in_exports(&b, "IMG_1.jpg")];
     let mut got: Vec<String> = written.iter().map(|p| p.to_string()).collect();
     want.sort();
     got.sort();
@@ -999,7 +1000,8 @@ fn same_folder_as_original_exports_next_to_each_photo() {
     assert!(!dir.join("unused").exists(), "nothing written to the specific folder");
     // again: each folder's own collision gets the next free name
     let files = crate::export::export_batch(&mut s, &ids, &o, &to, &mut crate::export::write_file, &exists).unwrap();
-    assert!(files.iter().all(|f| f["path"].as_str().unwrap().ends_with("Exports/IMG_1-2.jpg")), "{files:?}");
+    let second = std::path::Path::new("Exports").join("IMG_1-2.jpg").to_string_lossy().to_string();
+    assert!(files.iter().all(|f| f["path"].as_str().unwrap().ends_with(&second)), "{files:?}");
     // no subfolder: next to the original, which is never written over
     let beside = ExportOptions { subfolder: String::new(), conflict: Conflict::Overwrite, ..o.clone() };
     let err = crate::export::export_batch(&mut s, &ids, &beside, &to, &mut crate::export::write_file, &exists).unwrap_err();
