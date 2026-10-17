@@ -77,7 +77,7 @@ fn psd(w: usize, h: usize, orientation: Option<u16>, rle: bool) -> Vec<u8> {
     b
 }
 
-/// Generated files of every format with a header reader, plus a fallback one (BMP via `image`).
+/// Generated files of every format with a header reader (GIF and BMP via `image`, JPEG XL via jixel).
 fn fixtures(w: usize, h: usize) -> Vec<(String, Vec<u8>)> {
     let img = pixels(w, h);
     let e = EncodeImage::rgba8(&img);
@@ -102,6 +102,15 @@ fn fixtures(w: usize, h: usize) -> Vec<(String, Vec<u8>)> {
     let mut bmp = Vec::new();
     image::codecs::bmp::BmpEncoder::new(&mut bmp).encode(&rgb, w as u32, h as u32, image::ExtendedColorType::Rgb8).unwrap();
     out.push(("bmp".into(), bmp));
+    let mut gif = Vec::new();
+    image::codecs::gif::GifEncoder::new(&mut gif).encode(&rgb, w as u32, h as u32, image::ExtendedColorType::Rgb8).unwrap();
+    out.push(("gif".into(), gif));
+    // jxl-oxide reads JPEG XL everywhere; jixel writes it on native targets only
+    if cfg!(not(target_arch = "wasm32")) {
+        out.push(("jxl lossy".into(), encode_jxl(&e, &JxlOptions::default(), &EncodeMeta::default()).unwrap()));
+        let lossless = JxlOptions { lossless: true, ..Default::default() };
+        out.push(("jxl lossless".into(), encode_jxl(&rgb_e, &lossless, &EncodeMeta::default()).unwrap()));
+    }
     out
 }
 
@@ -363,4 +372,119 @@ fn mutated_files_agree_with_decode() {
     }
     assert!(decodable > 1000, "{decodable}");
     assert!(disagreements.is_empty(), "{disagreements:#?}");
+}
+
+/// A GIF of `w`×`h` (logical screen) holding one 1×1 frame, 35 bytes (issue #2116).
+fn gif_screen(w: u16, h: u16) -> Vec<u8> {
+    let mut b = b"GIF89a".to_vec();
+    b.extend_from_slice(&w.to_le_bytes());
+    b.extend_from_slice(&h.to_le_bytes());
+    b.extend_from_slice(&[0x80, 0, 0, 0, 0, 0, 0xFF, 0xFF, 0xFF]); // 2-colour global palette
+    b.extend_from_slice(&[0x2C, 0, 0, 0, 0, 1, 0, 1, 0, 0]); // image descriptor: 1×1 at 0,0
+    b.extend_from_slice(&[0x02, 0x02, 0x44, 0x01, 0x00, 0x3B]); // LZW data, trailer
+    b
+}
+
+/// A BMP info header declaring `w`×`h` at 24 bits, with a few bytes of pixel data.
+fn bmp_header(w: i32, h: i32) -> Vec<u8> {
+    let mut b = b"BM".to_vec();
+    b.extend_from_slice(&70u32.to_le_bytes()); // file size (as written; decoders ignore it)
+    b.extend_from_slice(&[0; 4]);
+    b.extend_from_slice(&54u32.to_le_bytes()); // pixel data offset
+    b.extend_from_slice(&40u32.to_le_bytes()); // BITMAPINFOHEADER
+    b.extend_from_slice(&w.to_le_bytes());
+    b.extend_from_slice(&h.to_le_bytes());
+    b.extend_from_slice(&1u16.to_le_bytes());
+    b.extend_from_slice(&24u16.to_le_bytes());
+    b.extend_from_slice(&[0; 24]); // BI_RGB, sizes, resolution, palette counts
+    b.extend_from_slice(&[0x55; 16]);
+    b
+}
+
+/// A GIF or BMP header can declare a gigapixel image in a few bytes: `read_header` reads the size
+/// from the header and never decodes it, and both refuse what is past the default limits before
+/// allocating (issue #2116; this used to decode the whole logical screen: 4 GiB of RGBA and 16 GiB
+/// of float working buffers for the first case).
+#[test]
+fn gif_and_bmp_size_bombs_are_read_from_their_headers() {
+    let bomb = gif_screen(32768, 32768);
+    assert_eq!(bomb.len(), 35);
+    assert!(matches!(read_header(&bomb), Err(Error::TooLarge(32768, 32768))), "{:?}", read_header(&bomb));
+    assert!(matches!(decode(&bomb, DecodeOptions::default()), Err(Error::TooLarge(32768, 32768))));
+    // in range, but past the pixel-data check: the size comes from the header alone
+    assert_eq!(read_header(&gif_screen(20000, 20000)).unwrap(), Header { format: Format::Gif, width: 20000, height: 20000, orientation: 1 });
+    // the decode's byte budget refuses the RGBA screen a smaller budget can't hold
+    let tight = DecodeOptions { max_bytes: 20000 * 20000 * 4 - 1, ..Default::default() };
+    assert!(matches!(decode(&gif_screen(20000, 20000), tight), Err(Error::TooLarge(20000, 20000))));
+    // a small one is read in full, and agrees with its decode
+    let small = gif_screen(7, 5);
+    assert_eq!(read_header(&small).unwrap(), decoded(&small).unwrap());
+    assert!(read_header(&small[..small.len() - 4]).is_err(), "truncated LZW data");
+
+    assert!(matches!(read_header(&bmp_header(30000, 30000)), Err(Error::TooLarge(30000, 30000))));
+    assert!(matches!(decode(&bmp_header(30000, 30000), DecodeOptions::default()), Err(Error::TooLarge(30000, 30000))));
+    assert_eq!(read_header(&bmp_header(20000, -20000)).unwrap(), Header { format: Format::Bmp, width: 20000, height: 20000, orientation: 1 });
+    assert!(read_header(&bmp_header(4, 4)).is_err(), "a small BMP's pixel data is checked: 16 of 48 bytes");
+}
+
+/// A TIFF with `spp` samples a pixel of 8 bits, one uncompressed strip of a few bytes.
+fn tiff_multiband(w: u32, h: u32, spp: u16) -> Vec<u8> {
+    let entries: [(u16, u16, u32, u32); 9] = [
+        (256, 4, 1, w),
+        (257, 4, 1, h),
+        (258, 3, spp as u32, 0), // BitsPerSample: offset patched below
+        (259, 3, 1, 1),
+        (262, 3, 1, 1),
+        (273, 4, 1, 0), // StripOffsets: patched below
+        (277, 3, 1, spp as u32),
+        (278, 4, 1, h),
+        (279, 4, 1, 16),
+    ];
+    let ifd_len = 2 + entries.len() * 12 + 4;
+    let bps_at = 8 + ifd_len as u32;
+    let strip_at = bps_at + 2 * spp as u32;
+    let mut b = b"II*\0\x08\0\0\0".to_vec();
+    b.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+    for (tag, kind, count, value) in entries {
+        let value = match tag {
+            258 if spp > 2 => bps_at,
+            258 => 8,
+            273 => strip_at,
+            _ => value,
+        };
+        b.extend_from_slice(&tag.to_le_bytes());
+        b.extend_from_slice(&kind.to_le_bytes());
+        b.extend_from_slice(&count.to_le_bytes());
+        b.extend_from_slice(&value.to_le_bytes());
+    }
+    b.extend_from_slice(&[0; 4]);
+    if spp > 2 {
+        for _ in 0..spp {
+            b.extend_from_slice(&8u16.to_le_bytes());
+        }
+    }
+    b.extend_from_slice(&[0x80; 16]);
+    b
+}
+
+/// 4000 samples a pixel at 1 MP is a 4 GB `tiff` result buffer from a file of a few KB: refused by
+/// the header and the decode before it is allocated (issue #2125).
+#[test]
+fn multiband_tiff_sample_bomb_is_refused() {
+    let bomb = tiff_multiband(1024, 1024, 4000);
+    assert!(bomb.len() < 10_000);
+    let refused = |r: Result<Header>| matches!(r, Err(Error::Unsupported(Format::Tiff, m)) if m.contains("bytes of samples"));
+    assert!(refused(read_header(&bomb)), "{:?}", read_header(&bomb));
+    assert!(matches!(decode(&bomb, DecodeOptions::default()), Err(Error::Unsupported(Format::Tiff, _))));
+    // a byte budget below the samples refuses an ordinary layout too
+    let rgb = encode_tiff(&EncodeImage::rgba8(&pixels(64, 64)), TiffCompression::None, &EncodeMeta::default()).unwrap();
+    assert!(decode(&rgb, DecodeOptions::default()).is_ok());
+    assert!(matches!(decode(&rgb, DecodeOptions { max_bytes: 64 * 64 * 4 - 1, ..Default::default() }), Err(Error::TooLarge(64, 64))));
+}
+
+/// Options written before `max_bytes` existed still deserialize, with the default budget.
+#[test]
+fn decode_options_without_a_byte_budget_deserialize() {
+    let o: DecodeOptions = serde_json::from_str(r#"{"max_size":null,"max_pixels":5}"#).unwrap();
+    assert_eq!((o.max_pixels, o.max_bytes), (5, DEFAULT_MAX_BYTES));
 }

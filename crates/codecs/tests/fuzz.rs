@@ -23,13 +23,13 @@ const MAGICS: &[&[u8]] = &[
 ];
 
 fn small_opts() -> DecodeOptions {
-    DecodeOptions { max_size: None, max_pixels: 1 << 22 }
+    DecodeOptions { max_size: None, max_pixels: 1 << 22, ..Default::default() }
 }
 
 fn try_all(bytes: &[u8]) {
     if let Some(f) = sniff(bytes) {
         let _ = decode_unguarded(bytes, f, &small_opts());
-        let _ = decode_unguarded(bytes, f, &DecodeOptions { max_size: Some((8, 8)), max_pixels: 1 << 22 });
+        let _ = decode_unguarded(bytes, f, &DecodeOptions { max_size: Some((8, 8)), max_pixels: 1 << 22, ..Default::default() });
         let _ = read_header_unguarded(bytes, f);
     }
     let _ = decode(bytes, small_opts());

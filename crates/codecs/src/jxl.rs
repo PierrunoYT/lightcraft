@@ -16,6 +16,19 @@ fn err(e: impl std::fmt::Display) -> Error {
     Error::Malformed(F, e.to_string())
 }
 
+/// Dimensions from the codestream headers (orientation already applied by jxl-oxide, so 1, as a
+/// decode reports it), without rendering a frame. Refused, as a decode would refuse it: headers
+/// jxl-oxide rejects, or no complete first keyframe (truncated).
+pub(crate) fn header(bytes: &[u8]) -> Result<(u32, u32, u16)> {
+    let img = JxlImage::builder().read(std::io::Cursor::new(bytes)).map_err(err)?;
+    let (w, h) = (img.width(), img.height());
+    check_size(F, w as u64, h as u64, &DecodeOptions::default())?;
+    if img.num_loaded_keyframes() == 0 {
+        return Err(err("truncated: no complete frame"));
+    }
+    Ok((w, h, 1))
+}
+
 pub(crate) fn decode(bytes: &[u8], opts: &DecodeOptions) -> Result<Decoded> {
     let mut img = JxlImage::builder().read(std::io::Cursor::new(bytes)).map_err(err)?;
     let (w, h) = (img.width(), img.height());
