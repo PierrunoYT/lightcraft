@@ -60,7 +60,55 @@ pub fn check_image(data: &[u8], info: &ImageInfo) -> Result<usize> {
     if available.saturating_mul(2048) < total as u64 {
         return Err(RawError::Corrupt(format!("{available} bytes of image data cannot hold {total} samples")));
     }
+    // Each chunk is decoded at its nominal size, which for tiles may reach far past the image: a one-row
+    // image of 32768-row tiles asks 2 GiB a tile from a few bytes of data (issue #2117).
+    let nominal = chunks.iter().map(|c| chunk_samples(info, c)).fold(0usize, usize::saturating_add);
+    if nominal > nominal_budget(total) {
+        return Err(RawError::Limit("tiles far larger than the image"));
+    }
     Ok(total)
+}
+
+/// Most samples the nominal chunks of an image of `total` samples may hold together. A tile grid
+/// overhangs the image by less than one tile a side, so at most twice the image each way once the
+/// image is at least a tile wide and tall; the slack covers images smaller than one tile (a
+/// 4096 × 4096 tile of one sample).
+fn nominal_budget(total: usize) -> usize {
+    total.saturating_mul(4).saturating_add(1 << 24)
+}
+
+/// Samples in chunk `c` at its nominal size.
+fn chunk_samples(info: &ImageInfo, c: &Chunk) -> usize {
+    let ccpp = if info.planar == 2 { 1 } else { info.samples_per_pixel as usize };
+    (c.width as usize).saturating_mul(c.height as usize).saturating_mul(ccpp)
+}
+
+/// Most nominal samples decoded before they are placed (128 MiB of 16-bit samples): collected all
+/// at once, a file's whole nominal grid was held next to the output (issue #2117).
+const BATCH_SAMPLES: usize = 1 << 26;
+
+/// Decode `chunks` in parallel, in batches of at most [`BATCH_SAMPLES`] nominal samples (but at
+/// least one chunk a thread), handing each result to `place` in order; an error from `place` stops
+/// the run.
+pub(crate) fn decode_in_batches<T: Send>(
+    info: &ImageInfo,
+    chunks: &[Chunk],
+    decode: impl Fn(&Chunk) -> T + Sync,
+    place: impl FnMut(&Chunk, T) -> Result<()>,
+) -> Result<()> {
+    let per_chunk = chunks.iter().map(|c| chunk_samples(info, c)).max().unwrap_or(1).max(1);
+    batched(chunks, (BATCH_SAMPLES / per_chunk).max(rayon::current_num_threads()), decode, place)
+}
+
+/// [`decode_in_batches`] with `n` chunks a batch.
+fn batched<T: Send>(chunks: &[Chunk], n: usize, decode: impl Fn(&Chunk) -> T + Sync, mut place: impl FnMut(&Chunk, T) -> Result<()>) -> Result<()> {
+    for batch in chunks.chunks(n.max(1)) {
+        let decoded: Vec<T> = batch.par_iter().map(&decode).collect();
+        for (c, d) in batch.iter().zip(decoded) {
+            place(c, d)?;
+        }
+    }
+    Ok(())
 }
 
 /// Read the samples of `info` in `mode`: [`Mode::Header`] only checks them ([`check_image`]) and
@@ -105,17 +153,16 @@ pub fn read_image(data: &[u8], info: &ImageInfo, order: ByteOrder, packing: Pack
     let chunks = info.chunks(data.len() as u64);
     let planar = info.planar == 2 && cpp > 1;
     let ccpp = if planar { 1 } else { cpp };
-    let decoded: Vec<Result<(Chunk, ChunkPx)>> =
-        chunks.par_iter().map(|c| decode_chunk(data, info, c, order, packing, ccpp, bits, float).map(|p| (*c, p))).collect();
     let mut out_u16 = if float { Vec::new() } else { vec![0u16; total] };
     let mut out_f32 = if float { vec![0f32; total] } else { Vec::new() };
-    for r in decoded {
+    let decode = |c: &Chunk| decode_chunk(data, info, c, order, packing, ccpp, bits, float);
+    decode_in_batches(info, &chunks, decode, |c, r| {
         // a chunk that cannot be decoded is not a partial image: the file stays preview-only
-        let (c, px) = r?;
+        let px = r?;
         let (cw, ch) = (c.width as usize, c.height as usize);
         let (x0, y0) = (c.x as usize, c.y as usize);
         if x0 >= w || y0 >= h {
-            continue;
+            return Ok(());
         }
         let copy_w = cw.min(w - x0);
         let copy_h = ch.min(h - y0);
@@ -143,7 +190,8 @@ pub fn read_image(data: &[u8], info: &ImageInfo, order: ByteOrder, packing: Pack
                 }
             }
         }
-    }
+        Ok(())
+    })?;
     Ok(if float { RawData::F32(out_f32) } else { RawData::U16(out_u16) })
 }
 
@@ -179,7 +227,9 @@ fn decode_chunk(data: &[u8], info: &ImageInfo, c: &Chunk, order: ByteOrder, pack
         }
         comp::LOSSY_JPEG => {
             // lossy DNG: each chunk is a baseline (DCT) JPEG of 8-bit samples
-            let (px, jw, jh, jc) = lossy_jpeg(src, cpp)?;
+            // at most the nominal tile (DNG tiles are multiples of 16, as JPEG blocks are)
+            let max = (cw.next_multiple_of(16), ch.next_multiple_of(16));
+            let (px, jw, jh, jc) = lossy_jpeg(src, cpp, max, max.0.saturating_mul(max.1))?;
             let mut v = vec![0u16; n];
             for y in 0..ch.min(jh) {
                 for x in 0..cw.min(jw) {
@@ -224,17 +274,26 @@ fn jxl_chunk_check(src: &[u8], cw: usize, ch: usize, vw: usize, vh: usize, cpp: 
     jxl_chunk(src, cw, ch, vw, vh, cpp, bits, float).map(|_| ())
 }
 
-/// Decode one baseline JPEG chunk to 8-bit samples: (samples, width, height, channels).
-pub(crate) fn lossy_jpeg(src: &[u8], cpp: usize) -> Result<(Vec<u8>, usize, usize, usize)> {
+/// Decode one baseline JPEG chunk to 8-bit samples: (samples, width, height, channels). A frame
+/// wider or taller than `max`, or of more than `max_px` pixels, is refused from its header before
+/// zune-jpeg allocates the output it declares: up to 65535² × 3 bytes (12.9 GB) from a few
+/// hundred, or on wasm32 a size that overflows `usize` and panics inside zune-jpeg (issue #2118).
+pub(crate) fn lossy_jpeg(src: &[u8], cpp: usize, max: (usize, usize), max_px: usize) -> Result<(Vec<u8>, usize, usize, usize)> {
     use zune_core::bytestream::ZCursor;
     use zune_core::colorspace::ColorSpace;
     use zune_core::options::DecoderOptions;
     let cs = if cpp == 1 { ColorSpace::Luma } else { ColorSpace::RGB };
-    let opts = DecoderOptions::default().set_max_width(1 << 16).set_max_height(1 << 16).set_strict_mode(false).jpeg_set_out_colorspace(cs);
+    let (max_w, max_h) = (max.0.clamp(1, u16::MAX as usize), max.1.clamp(1, u16::MAX as usize));
+    let opts = DecoderOptions::default().set_max_width(max_w).set_max_height(max_h).set_strict_mode(false).jpeg_set_out_colorspace(cs);
     let mut d = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(src), opts);
-    let px = d.decode().map_err(|e| RawError::Corrupt(format!("lossy JPEG tile: {e}")))?;
+    let corrupt = |e: zune_jpeg::errors::DecodeErrors| RawError::Corrupt(format!("lossy JPEG tile: {e}"));
+    d.decode_headers().map_err(corrupt)?;
     let info = d.info().ok_or_else(|| RawError::Corrupt("lossy JPEG tile without a header".into()))?;
     let (w, h) = (info.width as usize, info.height as usize);
+    if w > max_w || h > max_h || w.saturating_mul(h) > max_px || d.output_buffer_size().is_none() {
+        return Err(RawError::Limit("lossy JPEG frame larger than expected"));
+    }
+    let px = d.decode().map_err(corrupt)?;
     let c = if cpp == 1 { 1 } else { 3 };
     if w == 0 || h == 0 || px.len() < w * h * c {
         return Err(RawError::Corrupt("lossy JPEG tile: short output".into()));
@@ -435,7 +494,92 @@ mod lossy_tests {
         let small = vec![1u8; 2 * 16 * 16];
         assert!(read_image(&small, &info(16, small.len() as u64), ByteOrder::Little, Packing::Msb).is_ok());
         let data = vec![1u8; 4096];
-        assert!(matches!(read_image(&data, &info(16384, data.len() as u64), ByteOrder::Little, Packing::Msb), Err(RawError::Corrupt(_))));
+        // refused by the aggregate tile budget now (issue #2117), before the data check of #1512
+        let r = read_image(&data, &info(16384, data.len() as u64), ByteOrder::Little, Packing::Msb);
+        assert!(matches!(r, Err(RawError::Corrupt(_) | RawError::Limit(_))), "{r:?}");
+    }
+
+    fn tiled(width: u32, height: u32, tile: (u32, u32), compression: u16, chunks: usize, bytes: u64) -> ImageInfo {
+        ImageInfo {
+            width,
+            height,
+            bits_per_sample: vec![8],
+            samples_per_pixel: 1,
+            compression,
+            photometric: 32803,
+            planar: 1,
+            predictor: 1,
+            sample_format: 1,
+            new_subfile_type: 0,
+            layout: Layout::Tiles { tile_width: tile.0, tile_height: tile.1 },
+            offsets: vec![0; chunks],
+            byte_counts: vec![bytes; chunks],
+        }
+    }
+
+    /// A one-row image of 64 nominal 32768 × 32768 lossy-JPEG tiles, all pointing at the same 16 KB
+    /// of data, passes the per-chunk checks; together they asked 64 × 2 GiB before a byte was decoded.
+    /// Refused by the aggregate budget, in the header read as in the decode (issue #2117).
+    #[test]
+    fn nominal_tiles_far_past_the_image_are_refused() {
+        let data = vec![0u8; 16384];
+        let bomb = tiled(64 * 32768, 1, (32768, 32768), comp::LOSSY_JPEG, 64, 16384);
+        assert_eq!(read_image(&data, &bomb, ByteOrder::Little, Packing::Msb), Err(RawError::Limit("tiles far larger than the image")));
+        assert!(matches!(read_image_in(crate::Mode::Header, &data, &bomb, ByteOrder::Little, Packing::Msb), Err(RawError::Limit(_))));
+        // ordinary overhangs pass: one tile larger than a small image, and a 2 × 2 grid barely past 256
+        assert!(check_image(&data, &tiled(300, 300, (4096, 4096), comp::NONE, 1, 16384)).is_ok());
+        assert!(check_image(&data, &tiled(300, 300, (256, 256), comp::NONE, 4, 16384)).is_ok());
+        assert!(check_image(&data, &tiled(4097, 4097, (4096, 4096), comp::NONE, 4, 16384)).is_ok());
+    }
+
+    /// Batches are placed in chunk order, each chunk once, and an error from `place` stops the run.
+    #[test]
+    fn batches_place_every_chunk_in_order() {
+        let info = tiled(64, 64, (16, 16), comp::NONE, 16, 1);
+        let chunks = info.chunks(1);
+        for n in [1, 3, 16, 100] {
+            let mut seen = Vec::new();
+            batched(
+                &chunks,
+                n,
+                |c| c.index * 10,
+                |c, v| {
+                    assert_eq!(v, c.index * 10);
+                    seen.push(c.index);
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!(seen, (0..16).collect::<Vec<_>>(), "batches of {n}");
+        }
+        let mut placed = 0;
+        let r = batched(
+            &chunks,
+            4,
+            |c| c.index,
+            |_, v| {
+                placed += 1;
+                if v == 5 { Err(RawError::Corrupt("stop".into())) } else { Ok(()) }
+            },
+        );
+        assert!(r.is_err());
+        assert_eq!(placed, 6);
+    }
+
+    /// A lossy-JPEG frame whose SOF declares 65535 × 65535 is refused from its header, before
+    /// zune-jpeg allocates the 12.9 GB output it declares (issue #2118): as a DNG tile and as the
+    /// embedded preview the white-balance estimate decodes.
+    #[test]
+    fn lossy_jpeg_larger_than_expected_is_refused_from_its_header() {
+        let px: Vec<u8> = (0..16 * 8 * 3).map(|i| (i * 7) as u8).collect();
+        let mut jpeg = Vec::new();
+        jpeg_encoder::Encoder::new(&mut jpeg, 90).encode(&px, 16, 8, jpeg_encoder::ColorType::Rgb).unwrap();
+        assert!(lossy_jpeg(&jpeg, 3, (16, 16), 256).is_ok());
+        assert!(matches!(lossy_jpeg(&jpeg, 3, (8, 16), 256), Err(_)), "wider than the tile");
+        let sof = jpeg.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
+        jpeg[sof + 5..sof + 9].copy_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+        assert!(lossy_jpeg(&jpeg, 3, (16, 16), 256).is_err());
+        assert_eq!(lossy_jpeg(&jpeg, 3, (1 << 16, 1 << 16), 1 << 24), Err(RawError::Limit("lossy JPEG frame larger than expected")));
     }
 
     /// A lossless-JPEG tile may be coded only as tall as the part inside the image, never shorter.
