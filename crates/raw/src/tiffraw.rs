@@ -575,7 +575,7 @@ mod lossy_tests {
         let mut jpeg = Vec::new();
         jpeg_encoder::Encoder::new(&mut jpeg, 90).encode(&px, 16, 8, jpeg_encoder::ColorType::Rgb).unwrap();
         assert!(lossy_jpeg(&jpeg, 3, (16, 16), 256).is_ok());
-        assert!(matches!(lossy_jpeg(&jpeg, 3, (8, 16), 256), Err(_)), "wider than the tile");
+        assert!(lossy_jpeg(&jpeg, 3, (8, 16), 256).is_err(), "wider than the tile");
         let sof = jpeg.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
         jpeg[sof + 5..sof + 9].copy_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
         assert!(lossy_jpeg(&jpeg, 3, (16, 16), 256).is_err());

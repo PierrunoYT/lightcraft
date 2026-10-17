@@ -1,5 +1,16 @@
 # What's new in LightCraft
 
+## 2026-10-17
+
+### Reliability
+- A few-KB image file can no longer make LightCraft ask for gigabytes of memory, and abort, while importing or
+  opening it (issues #2116, #2117, #2118, #2125). A GIF, BMP or JPEG XL's size is now read from its header instead
+  of decoding the image. TIFF and PNG decoders get a 4 GB budget instead of 32 GB and 8 GB, and a TIFF's samples per
+  pixel count toward it. A DNG or ARW whose tiles reach far past the image is refused, and tiles are decoded in
+  batches rather than all held at once. A JPEG tile or embedded preview is checked against its expected size before
+  it is decoded. Images up to 512 megapixels open (the limit was 1 gigapixel), and when the system refuses the
+  memory for a full-size image, that is now an error message rather than a crash.
+
 ## 2026-10-14
 
 ### Lightroom radial masks on the right side
