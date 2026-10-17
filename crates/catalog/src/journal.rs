@@ -424,7 +424,14 @@ impl Journal {
         }
 
         if let Some(at) = damaged_at {
-            let name = format!("{LOG}.damaged-{}", j.seq);
+            // a free name: a second damage at the same op must not replace the first copy (issue #2140)
+            let mut name = format!("{LOG}.damaged-{}", j.seq);
+            for k in 1..1000 {
+                if j.store.read(&name).map_err(io)?.is_none() {
+                    break;
+                }
+                name = format!("{LOG}.damaged-{}-{k}", j.seq);
+            }
             j.store.write_atomic(&name, &log).map_err(io)?;
             log::warn!("catalog log damaged at byte {at}; kept as {name}; state recovered up to op {}", j.seq);
             report.damaged = Some(name);

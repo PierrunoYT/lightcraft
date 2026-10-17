@@ -229,6 +229,14 @@ fn mid_log_damage_is_preserved_and_recovered() {
     let (_, c2, r2) = open(&m);
     assert_eq!(c2.to_snapshot(), c.to_snapshot());
     assert!(r2.damaged.is_none());
+    // damaged again at the same op: a second copy, the first one kept (issue #2140)
+    let again = [&bad[..], b"{\"seq\":1,\"broken
+"].concat();
+    m.set(LOG, again.clone());
+    let (_, _, r3) = open(&m);
+    let second = r3.damaged.expect("damage reported");
+    assert_ne!(second, name);
+    assert_eq!((m.get(&name).unwrap(), m.get(&second).unwrap()), (bad, again));
 }
 
 #[test]
