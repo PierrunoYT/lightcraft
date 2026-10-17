@@ -77,11 +77,19 @@ fn status_and_model_commands_without_the_model() {
 #[test]
 fn a_failing_download_ends_with_an_error_and_never_blocks() {
     use std::io::{BufRead, BufReader, Write};
-    // a local mirror that has nothing
+    // a local mirror that has nothing, and holds its answers until the test has checked that a second
+    // request while the download runs starts nothing (else under load the first one may be over by
+    // then, and a second download start rightly: issue #2140)
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}/sam3", l.local_addr().unwrap());
+    let hold = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let held = hold.clone();
     std::thread::spawn(move || {
         for mut c in l.incoming().flatten() {
+            let t = Instant::now();
+            while held.load(std::sync::atomic::Ordering::SeqCst) && t.elapsed() < Duration::from_secs(20) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
             let mut r = BufReader::new(c.try_clone().unwrap());
             let mut line = String::new();
             while r.read_line(&mut line).unwrap_or(0) > 2 {
@@ -103,6 +111,7 @@ fn a_failing_download_ends_with_an_error_and_never_blocks() {
     // a second request while it runs starts nothing
     let again = s.execute("segment.model.download", &json!({"acknowledged": true})).unwrap();
     assert!(again["started"] == false || again["downloading"] == false);
+    hold.store(false, std::sync::atomic::Ordering::SeqCst);
     let t = Instant::now();
     while s.segmenter.download_status().running {
         assert!(t.elapsed() < Duration::from_secs(30), "the download never ended");
