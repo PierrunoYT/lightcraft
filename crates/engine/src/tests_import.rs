@@ -609,6 +609,72 @@ fn cube_luts_become_profiles() {
     let _ = std::fs::remove_dir_all(&lib);
 }
 
+/// `prefs.json` records each imported profile's file, but only the library's own copy in
+/// `Profiles/` is read or deleted: a path out through `..`, a path elsewhere, a file past the size
+/// cap or a link is never followed (issue #2123). Delete Imported Profile used to remove whatever
+/// `<lib>/Profiles/../..` named, and opening the library read any file it named, unbounded.
+#[test]
+fn lut_profile_paths_in_prefs_stay_inside_profiles() {
+    let src = temp_dir("cubeprefs-src");
+    let lib = temp_dir("cubeprefs-lib");
+    let outside = temp_dir("cubeprefs-outside");
+    let mut cube = String::from("LUT_3D_SIZE 2\n");
+    for i in 0..8 {
+        cube.push_str(&format!("{} {} {}\n", i & 1, (i >> 1) & 1, (i >> 2) & 1));
+    }
+    for name in ["a", "b", "c"] {
+        std::fs::write(src.join(format!("{name}.cube")), &cube).unwrap();
+    }
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, true).unwrap();
+    let r = s.execute("profile.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
+    let ids: Vec<String> = r["imported"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(ids.len(), 3, "{r}");
+    drop(s);
+    for id in &ids {
+        lightcraft_pipeline::lut::unregister(id);
+    }
+
+    // what a crafted prefs.json names: files outside the library, one of them through `..`
+    let victim = outside.join("victim.cube");
+    std::fs::write(&victim, &cube).unwrap();
+    let prefs = lib.join("prefs.json");
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&prefs).unwrap()).unwrap();
+    let traversal = lib.join("Profiles").join("..").join("..").join(outside.file_name().unwrap()).join("victim.cube");
+    let files = [traversal.to_string_lossy().to_string(), victim.to_string_lossy().to_string()];
+    let mut patched = 0;
+    for list in v.as_object_mut().unwrap().values_mut().filter_map(|x| x.as_array_mut()) {
+        for p in list.iter_mut().filter(|p| p.get("file").is_some()) {
+            if let Some(i) = ids.iter().position(|id| p["id"] == id.as_str()).filter(|&i| i < 2) {
+                p["file"] = json!(files[i]);
+                patched += 1;
+            }
+        }
+    }
+    assert_eq!(patched, 2, "{v}");
+    std::fs::write(&prefs, serde_json::to_vec(&v).unwrap()).unwrap();
+    // the third profile's own copy grows past the cap (sparse: no 64 MB written)
+    let third = lib.join("Profiles").join(format!("{}.cube", ids[2].trim_start_matches("lut:")));
+    std::fs::OpenOptions::new().write(true).open(&third).unwrap().set_len((64 << 20) + 1).unwrap();
+
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    assert_eq!(s.lut_profiles.len(), 3, "the list itself is kept");
+    for id in &ids {
+        assert!(lightcraft_pipeline::lut::get(id).is_none(), "{id}: nothing outside Profiles/ or past the cap is read");
+    }
+    for id in &ids[..2] {
+        s.execute("profile.deleteImported", &json!({"id": id})).unwrap();
+    }
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), cube, "the file outside the library is left alone");
+    // the library's own copy is still deleted
+    s.execute("profile.deleteImported", &json!({"id": ids[2]})).unwrap();
+    assert!(!third.exists());
+    for d in [&src, &lib, &outside] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
 /// Folder rename / move on disk: files and sidecars go along, the photos are relinked and
 /// still render; clashes and moving into itself are refused.
 #[test]

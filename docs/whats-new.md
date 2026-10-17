@@ -1,5 +1,14 @@
 # What's new in LightCraft
 
+## 2026-10-17
+
+### Imported profiles stay inside the library
+- A library's imported LUT profiles are read only from its own `Profiles/` folder, and Delete Imported Profile
+  deletes only the copy there (issue #2123). An edited or crafted `prefs.json` could point a profile at any file:
+  opening the library read it whole (a device such as `/dev/zero` until memory ran out, a network share), and
+  deleting the profile could remove a file outside the library through `..`. Profile files over 64 MB are skipped.
+  A library moved to another folder keeps its profiles.
+
 ## 2026-10-14
 
 ### Lightroom radial masks on the right side
