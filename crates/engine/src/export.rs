@@ -1203,7 +1203,7 @@ impl ExportOptions {
         let base = if self.naming.trim().is_empty() { "{name}" } else { self.naming.as_str() };
         let n = seq + self.start_number.max(1) as usize - 1;
         let name = crate::rename::expand_tokens(base, p, n, 3);
-        let mut name: String = name.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '\0') { '_' } else { c }).collect();
+        let mut name = portable_stem(&name);
         let (stem, ext) = p.file_name.rsplit_once('.').unwrap_or((&p.file_name, ""));
         if name.trim().is_empty() {
             // every token came out empty (no title, no capture time…): keep the original name
@@ -1216,6 +1216,23 @@ impl ExportOptions {
             format!("{name}.{}", self.format.extension())
         }
     }
+}
+
+/// A file name stem every file system takes (issue #2140): path separators, the characters Windows
+/// forbids (`: * ? " < > |`) and control characters become `_`, trailing dots and spaces go (Windows
+/// drops them), and a device name Windows reserves (`CON`, `NUL`, `COM1`…, also before a dot) gets
+/// a `_` so it names a file.
+pub(crate) fn portable_stem(name: &str) -> String {
+    let mut s: String =
+        name.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() { '_' } else { c }).collect();
+    s.truncate(s.trim_end_matches(['.', ' ']).len());
+    let device = s.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+    let numbered =
+        device.len() == 4 && (device.starts_with("COM") || device.starts_with("LPT")) && device.ends_with(|c: char| ('1'..='9').contains(&c));
+    if matches!(device.as_str(), "CON" | "PRN" | "AUX" | "NUL") || numbered {
+        s.insert(device.len(), '_');
+    }
+    s
 }
 
 /// Unsharp mask on an 8-bit image (separable box-blur approximation of a small Gaussian).
@@ -2700,6 +2717,28 @@ mod tests {
         assert_eq!(orig.file_name_for(&named("DSC_1.NEF"), 2), "DSC_1-002.NEF");
         assert_eq!(orig.file_name_for(&named("noext"), 1), "noext-001");
         assert_eq!(ExportOptions { format: ExportFormat::Dng, ..Default::default() }.file_name_for(&named("a.cr2"), 1), "a.dng");
+    }
+
+    /// Titles become file names Windows can create: no forbidden or control characters, no trailing
+    /// dot, no reserved device name (issue #2140).
+    #[test]
+    fn export_names_are_valid_on_windows() {
+        let mut p = named("IMG_1.jpg");
+        let o = ExportOptions { naming: "{title}".into(), ..Default::default() };
+        for (title, want) in [
+            ("What?", "What_.jpg"),
+            ("\"Best\" <of> a|b*c", "_Best_ _of_ a_b_c.jpg"),
+            ("tab\there", "tab_here.jpg"),
+            ("ends with dots...", "ends with dots.jpg"),
+            ("CON", "CON_.jpg"),
+            ("nul.tar", "nul_.tar.jpg"),
+            ("com7", "com7_.jpg"),
+            ("COM0", "COM0.jpg"),
+            ("Console", "Console.jpg"),
+        ] {
+            p.meta.title = title.into();
+            assert_eq!(o.file_name_for(&p, 1), want, "{title:?}");
+        }
     }
 
     fn named(file_name: &str) -> lightcraft_catalog::Photo {
