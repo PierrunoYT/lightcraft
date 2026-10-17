@@ -1,5 +1,12 @@
 # What's new in LightCraft
 
+## 2026-10-18
+
+### Release signing runs a reviewed workflow
+- The release pipeline, which signs and notarises the installers, now runs the shared build workflow at a pinned
+  commit instead of whatever its main branch holds (issue #2126): a change there reaches the signing credentials
+  only after a reviewed update here (Dependabot proposes it weekly).
+
 ## 2026-10-14
 
 ### Lightroom radial masks on the right side

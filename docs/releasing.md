@@ -90,3 +90,9 @@ signing identity is signed but not notarized. Configure only the platform creden
 
 Linux and web artifacts are not code-signed by this workflow. The release job computes SHA-256
 checksums for the complete artifact set and attaches the checksum file to the draft release.
+
+Because the release job receives these credentials, `.github/workflows/release.yml` calls the
+shared `storytold/craft-common-actions` release workflow at a pinned commit, not `@main` (the
+secret-free workflows still track `@main`). Dependabot opens a weekly pull request with the newer
+commit; review what changed in craft-common-actions before merging it. Give the `release`
+environment required reviewers so a signing run also waits for a person.

@@ -1,0 +1,12 @@
+# Keeps the commit-pinned actions and reusable workflows current (issue #2126): the release
+# workflow's pin of storytold/craft-common-actions, and the SHA-pinned actions of the other
+# workflows. Branch refs (@main) are left as they are. One grouped pull request a week.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

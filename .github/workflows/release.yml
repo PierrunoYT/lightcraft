@@ -21,8 +21,12 @@ concurrency:
 
 jobs:
   release:
-    # Intentionally tracked at @main (not SHA-pinned) so org-wide CI improvements, security fixes, and build optimizations propagate without PR churn across all craftapp repos.
-    uses: storytold/craft-common-actions/.github/workflows/release.yml@main
+    # Pinned to a commit, unlike the secret-free workflows (freebsd, windows-arm64), which track @main
+    # so org-wide CI improvements propagate: this one receives the signing certificates and the
+    # notarisation and Azure signing credentials, and a change pushed to craft-common-actions main
+    # must not reach them unreviewed (issue #2126). Dependabot (.github/dependabot.yml) proposes the
+    # newer commit weekly; review its diff in craft-common-actions before merging.
+    uses: storytold/craft-common-actions/.github/workflows/release.yml@43f4e83c68764f9d880f8a6c10328bc550465f2b # main, 2026-10-16
     with:
       app-name: lightcraft
       app-title: LightCraft
