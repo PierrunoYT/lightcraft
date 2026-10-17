@@ -484,7 +484,14 @@ impl Journal {
         let mut seq = self.seq;
         for op in ops {
             seq += 1;
-            buf.push_str(&encode_record(seq, op));
+            let record = encode_record(seq, op);
+            // JSON has no NaN or infinity: serde writes them as null, which passes the CRC and then fails
+            // to parse, refusing the library as "newer" on the next open. Such an op is refused here
+            // instead, before the log has it (issue #2140).
+            if decode_record(&record).is_none() {
+                return Err(CatalogError::Invalid("an edit holds a value that can't be saved (not a finite number)".into()));
+            }
+            buf.push_str(&record);
             buf.push('\n');
         }
         if self.tail_dirty {

@@ -436,3 +436,21 @@ fn stale_staging_files_are_removed_on_open() {
     assert_eq!((old.exists(), fresh.exists(), other.exists()), (false, true, true));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// An op holding a NaN (written as `null`, so it would pass its CRC and fail to parse) is refused by
+/// `append` instead of being logged: the library still opens, with everything before it (issue #2140).
+#[test]
+fn an_op_that_wont_read_back_is_never_logged() {
+    let (m, _, c) = sample_catalog_with_log();
+    let log = m.get(LOG).unwrap();
+    let (mut j, _, _) = open(&m);
+    let mut nan = DevelopSettings::default();
+    nan.light.exposure = f64::NAN;
+    let id = c.photos().next().unwrap().id;
+    let op = Op::SetDevelop { id, settings: Arc::new(nan), label: "Exposure".into(), edited: None };
+    let e = j.append(&[op]).unwrap_err();
+    assert!(e.to_string().contains("can't be saved"), "{e}");
+    assert_eq!(m.get(LOG).unwrap(), log, "nothing was appended");
+    let (_, c2, r) = open(&m);
+    assert_eq!((c2.to_snapshot(), r.damaged), (c.to_snapshot(), None));
+}
