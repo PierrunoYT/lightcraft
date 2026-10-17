@@ -242,9 +242,16 @@ fn plan(net: &Net, tile: usize, max_binding: u64) -> Result<(Layout, Vec<Layer>)
     if tile > MAX_TILE {
         return unsupported("the tile is larger than the kernels' dispatches reach");
     }
-    let side = |t: usize| -> usize {
+    // a tensor's side in cells: `None` when the level shifts it out of range (unreachable while the CPU
+    // runner validates the model first; checked so the planner can't wrap, issue #2140)
+    let side = |t: usize| -> Result<usize, String> {
         let level = net.shape(t).map_or(0, |s| s.level);
-        if level >= 0 { tile >> level } else { tile << (-level) }
+        let shift = level.unsigned_abs();
+        let s = if level >= 0 { tile.checked_shr(shift) } else { tile.checked_shl(shift).filter(|v| v >> shift == tile) };
+        s.filter(|&s| s > 0).ok_or_else(|| "a layer's size is out of range".to_string())
+    };
+    let bytes = |parts: &[usize]| -> Result<u64, String> {
+        parts.iter().try_fold(1u64, |a, &b| a.checked_mul(b as u64)).ok_or_else(|| "a layer's buffer is too large".to_string())
     };
     let chan = |t: usize| net.shape(t).map_or(0, |s| s.channels);
     if !net.in_channels.is_multiple_of(4) {
@@ -312,7 +319,7 @@ fn plan(net: &Net, tile: usize, max_binding: u64) -> Result<(Layout, Vec<Layer>)
                 if !c.cin.is_multiple_of(4) || !c.cout.is_multiple_of(4) {
                     return unsupported("a convolution whose channel counts are not multiples of 4");
                 }
-                let s = side(c.src);
+                let s = side(c.src)?;
                 let last = i + 2 == n_ops;
                 let (n, mode) = (c.cout, if last { 2u32 } else { 0u32 });
                 let (bm, bn, bk) = blocks(n, c.cin);
@@ -336,7 +343,7 @@ fn plan(net: &Net, tile: usize, max_binding: u64) -> Result<(Layout, Vec<Layer>)
                 if let Some(b) = bias.get_mut(..c.cout) {
                     b.copy_from_slice(&c.bias);
                 }
-                let m = s * s;
+                let m = s.checked_mul(s).ok_or("a layer's size is out of range")?;
                 let params = ConvParams {
                     h: s as u32,
                     w: s as u32,
@@ -356,7 +363,7 @@ fn plan(net: &Net, tile: usize, max_binding: u64) -> Result<(Layout, Vec<Layer>)
                 let dst = if last {
                     Output
                 } else {
-                    let slot = alloc((m * c.cout * 4) as u64, &mut slots, &mut free);
+                    let slot = alloc(bytes(&[m, c.cout, 4])?, &mut slots, &mut free);
                     Slot(slot)
                 };
                 if let Some(p) = place.get_mut(out_t) {
@@ -377,7 +384,7 @@ fn plan(net: &Net, tile: usize, max_binding: u64) -> Result<(Layout, Vec<Layer>)
                 if !c.cin.is_multiple_of(4) || !c.cout.is_multiple_of(4) {
                     return unsupported("a transposed convolution whose channel counts are not multiples of 4");
                 }
-                let s = side(c.src);
+                let s = side(c.src)?;
                 let n = 4 * c.cout;
                 let (bm, bn, bk) = blocks(n, c.cin);
                 let npad = round_up(n, bn as usize);
@@ -403,7 +410,7 @@ fn plan(net: &Net, tile: usize, max_binding: u64) -> Result<(Layout, Vec<Layer>)
                         }
                     }
                 }
-                let m = s * s;
+                let m = s.checked_mul(s).ok_or("a layer's size is out of range")?;
                 let params = ConvParams {
                     h: s as u32,
                     w: s as u32,
@@ -419,7 +426,7 @@ fn plan(net: &Net, tile: usize, max_binding: u64) -> Result<(Layout, Vec<Layer>)
                     pad: 0,
                 };
                 let src = get(&place, c.src)?;
-                let slot = alloc((4 * m * c.cout * 4) as u64, &mut slots, &mut free);
+                let slot = alloc(bytes(&[4, m, c.cout, 4])?, &mut slots, &mut free);
                 if let Some(p) = place.get_mut(out_t) {
                     *p = Some(Slot(slot));
                 }
@@ -435,7 +442,7 @@ fn plan(net: &Net, tile: usize, max_binding: u64) -> Result<(Layout, Vec<Layer>)
                 });
             }
             Op::MaxPool2 { src } => {
-                let (s, c) = (side(*src), chan(*src));
+                let (s, c) = (side(*src)?, chan(*src));
                 if !c.is_multiple_of(4) {
                     return unsupported("a max-pool over a channel count that is not a multiple of 4");
                 }
