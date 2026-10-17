@@ -230,8 +230,7 @@ fn mid_log_damage_is_preserved_and_recovered() {
     assert_eq!(c2.to_snapshot(), c.to_snapshot());
     assert!(r2.damaged.is_none());
     // damaged again at the same op: a second copy, the first one kept (issue #2140)
-    let again = [&bad[..], b"{\"seq\":1,\"broken
-"].concat();
+    let again = [&bad[..], b"{\"seq\":1,\"broken\n"].concat();
     m.set(LOG, again.clone());
     let (_, _, r3) = open(&m);
     let second = r3.damaged.expect("damage reported");
