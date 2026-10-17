@@ -153,7 +153,10 @@ device and whether it is used, or why not.
 **The protocol is not encrypted.** Listen on a VPN address (Tailscale, WireGuard) or a LAN, or bind every interface
 behind a firewall rule that admits only the VPN; never expose the port to the internet. Requests carry the shared
 token (compared in constant time); the server refuses other models, other tile sizes, oversized headers and payloads
-(also ones that inflate past their tile) and caps concurrent connections (`--max-connections`, default 8).
+(also ones that inflate past their tile) and caps concurrent connections (`--max-connections`, default 8). A
+connection has 10 seconds in all to send its first line with the right token, however slowly it sends it; after a
+bad token its address is turned away for a second, doubling with each further bad token up to five minutes, until
+it sends the right one.
 
 Protocol version 1 (`crates/denoise/src/remote.rs`): one JSON line per message, then a payload of `bytes` bytes —
 the tile's samples as little-endian half floats, byte-shuffled (low bytes, then high bytes) and deflated:

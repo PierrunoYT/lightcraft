@@ -1,5 +1,13 @@
 # What's new in LightCraft
 
+## 2026-10-17
+
+### denoise-serve turns away token guessers and slow peers
+- A `lightcraft-cli denoise-serve` server gives each connection 10 seconds in all to show the right token, and turns
+  an address away for a while after a bad token, longer with each one (issue #2133). A peer sending one byte every
+  minute could keep a connection slot for days, a handful of them shut the server, and on a LAN tokens could be
+  guessed as fast as the network allowed.
+
 ## 2026-10-14
 
 ### Lightroom radial masks on the right side
