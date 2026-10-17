@@ -700,6 +700,15 @@ impl Catalog {
                 Op::SetLabel { id, label: std::mem::replace(&mut p.label, label) }
             }
             Op::SetDevelop { id, settings, label, edited } => {
+                // every edit lands here, also settings built in code (a mask added a command at a
+                // time): none keeps a list past its limit (issue #2121)
+                let settings = if settings.over_list_limits() {
+                    let mut s = (*settings).clone();
+                    s.cap_lists();
+                    std::sync::Arc::new(s)
+                } else {
+                    settings
+                };
                 let p = self.photo_mut(id)?;
                 let old = std::mem::replace(&mut p.develop, settings);
                 let old_edit = std::mem::replace(&mut p.edited, edited);

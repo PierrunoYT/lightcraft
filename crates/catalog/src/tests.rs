@@ -12,6 +12,21 @@ fn photo(c: &mut Catalog, name: &str, date: &str) -> PhotoId {
     id
 }
 
+/// An edit built in code with more masks than the limit (a script adding one a command at a time)
+/// is stored cut to the limit: every edit goes through `apply` (issue #2121).
+#[test]
+fn edits_are_stored_within_list_limits() {
+    let mut c = Catalog::new();
+    let a = photo(&mut c, "a.jpg", "2026-04-01T10:00:00");
+    let many = DevelopSettings { masks: vec![Default::default(); lightcraft_develop::MAX_MASKS + 50], ..Default::default() };
+    c.apply(Op::SetDevelop { id: a, settings: Arc::new(many), label: "Masks".into(), edited: None }).unwrap();
+    assert_eq!(c.photo(a).unwrap().develop.masks.len(), lightcraft_develop::MAX_MASKS);
+    // within the limits the same settings are kept, not copied
+    let few = Arc::new(DevelopSettings { masks: vec![Default::default(); 3], ..Default::default() });
+    c.apply(Op::SetDevelop { id: a, settings: few.clone(), label: "Masks".into(), edited: None }).unwrap();
+    assert!(Arc::ptr_eq(&c.photo(a).unwrap().develop, &few));
+}
+
 #[test]
 fn apply_and_inverse_roundtrip() {
     let mut c = Catalog::new();

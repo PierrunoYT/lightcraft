@@ -1,5 +1,13 @@
 # What's new in LightCraft
 
+## 2026-10-17
+
+### Edits can't ask for unbounded masks
+- A photo's edit keeps at most 100 masks (64 shapes each, 2,000 brush strokes per brush, 5 colour samples per Color
+  Range), 1,000 spot removals and 64 red eye corrections, among other limits far past what an edit uses (issue
+  #2121). A crafted XMP sidecar, preset or script could list thousands of them in a few hundred KB, enough to make a
+  render ask for over 100 GB or loop for hours. Longer lists keep their first items.
+
 ## 2026-10-14
 
 ### Lightroom radial masks on the right side
