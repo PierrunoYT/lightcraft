@@ -833,3 +833,23 @@ fn jxl_bad_input_is_an_error() {
         encode_jxl(&EncodeImage::new(1, 1, 3, Samples::U8(&one)), &JxlOptions { quality: 1, ..Default::default() }, &EncodeMeta::default()).unwrap();
     assert_eq!(decode(&b, DecodeOptions::default()).unwrap().width, 1);
 }
+
+/// Metadata too large for one APP1 segment (a long caption or keyword list, a big maker note) is left
+/// out instead of failing the export: on both encoder paths the JPEG is written and decodes, without
+/// that block; what fits is kept (issue #2140).
+#[test]
+fn oversized_jpeg_metadata_is_left_out_not_fatal() {
+    let img = Rgba8::from_fn(24, 16, |x, y| [(x * 10) as u8, (y * 15) as u8, 90, 255]);
+    let e = EncodeImage::rgba8(&img);
+    let big_xmp = format!("<x:xmpmeta><rdf:RDF><rdf:Description dc:description=\"{}\"/></rdf:RDF></x:xmpmeta>", "a".repeat(70_000));
+    let big_exif = vec![0u8; 70_000];
+    for sub in [ChromaSubsampling::S444, ChromaSubsampling::S422] {
+        let meta = EncodeMeta { xmp: Some(&big_xmp), exif: Some(&big_exif), ..Default::default() };
+        let b = encode_jpeg(&e, 85, sub, &meta).unwrap_or_else(|err| panic!("{sub:?}: {err}"));
+        let d = decode(&b, DecodeOptions::default()).unwrap();
+        assert_eq!((d.width, d.xmp, d.exif), (24, None, None), "{sub:?}");
+        let small = "<x:xmpmeta/>";
+        let d = decode(&encode_jpeg(&e, 85, sub, &EncodeMeta { xmp: Some(small), ..Default::default() }).unwrap(), DecodeOptions::default()).unwrap();
+        assert_eq!(d.xmp.as_deref(), Some(small), "{sub:?}");
+    }
+}

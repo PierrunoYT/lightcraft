@@ -3151,6 +3151,7 @@ dependencies = [
  "lightcraft-heif",
  "lightcraft-raster",
  "lightcraft-testkit",
+ "log",
  "moxcms 0.9.1",
  "png",
  "proptest",

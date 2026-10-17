@@ -594,7 +594,13 @@ pub fn encode_jpeg(base: &EncodeImage, gain: &GainImage, m: &GainMapMeta, qualit
     let gain_segs = vec![(0xE1, xmp_segment(&m.to_gain_map_xmp())?), (0xE2, m.to_iso())];
     let gain_jpeg = jpeg_par::encode(&gain.data, gain.width, gain.height, gain.channels, quality, ChromaSubsampling::S444, &gain_segs);
 
-    let xmp = merge_xmp(meta.xmp, &primary_description(gain_jpeg.len()));
+    let description = primary_description(gain_jpeg.len());
+    let mut xmp = merge_xmp(meta.xmp, &description);
+    if xmp.len() > crate::encode::MAX_XMP_PACKET {
+        // the photo's own XMP leaves room for nothing else: keep the gain map's, which HDR readers need (issue #2140)
+        log::warn!("JPEG: the photo's XMP ({} bytes) doesn't fit one APP1 segment next to the gain map's; written without it", xmp.len());
+        xmp = merge_xmp(None, &description);
+    }
     let mut segs = jpeg_app_segments(&EncodeMeta { xmp: Some(&xmp), ..*meta })?;
     let mut iso_marker = ISO_URN.to_vec();
     iso_marker.extend_from_slice(&[0, 0, 0, 0]); // versions only: "this image has a gain map"

@@ -79,6 +79,35 @@ pub enum ChromaSubsampling {
 
 const XMP_NS: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
 
+/// Largest XMP packet one APP1 segment holds, after its namespace.
+pub(crate) const MAX_XMP_PACKET: usize = 65_533 - XMP_NS.len();
+/// Largest EXIF block one APP1 segment holds, after `Exif\0\0`.
+const MAX_EXIF: usize = 65_527;
+
+/// `exif` when it fits one APP1 segment. A larger one (a big maker note) is left out with a warning:
+/// the JPEG is written without it rather than not at all (issue #2140).
+fn fitting_exif(exif: Option<&[u8]>) -> Option<&[u8]> {
+    let exif = exif?;
+    if exif.len() > MAX_EXIF {
+        log::warn!("JPEG: the EXIF block ({} bytes) is larger than one APP1 segment (64 KiB); written without it", exif.len());
+        return None;
+    }
+    Some(exif)
+}
+
+/// The XMP APP1 payload when the packet fits one segment. A larger one (a long caption or keyword list)
+/// is left out with a warning, as [`fitting_exif`] does: extended XMP isn't written.
+fn fitting_xmp(xmp: Option<&str>) -> Option<Vec<u8>> {
+    let xmp = xmp?;
+    match xmp_segment(xmp) {
+        Ok(seg) => Some(seg),
+        Err(_) => {
+            log::warn!("JPEG: the XMP packet ({} bytes) is larger than one APP1 segment (64 KiB); written without it", xmp.len());
+            None
+        }
+    }
+}
+
 /// The APP segments [`encode_jpeg`] writes for `meta` (marker byte, payload): JFIF density, EXIF,
 /// XMP and the ICC profile in chunks, in that order.
 pub(crate) fn jpeg_app_segments(meta: &EncodeMeta) -> Result<Vec<(u8, Vec<u8>)>> {
@@ -88,14 +117,11 @@ pub(crate) fn jpeg_app_segments(meta: &EncodeMeta) -> Result<Vec<(u8, Vec<u8>)>>
         [1, hi, lo, hi, lo]
     });
     segs.push((0xE0, [&b"JFIF\0\x01\x02"[..], &ppi, &[0, 0]].concat()));
-    if let Some(exif) = meta.exif {
-        if exif.len() > 65_527 {
-            return Err(Error::Encode("EXIF larger than one APP1 segment (64 KiB)".into()));
-        }
+    if let Some(exif) = fitting_exif(meta.exif) {
         segs.push((0xE1, [&b"Exif\0\0"[..], exif].concat()));
     }
-    if let Some(xmp) = meta.xmp {
-        segs.push((0xE1, xmp_segment(xmp)?));
+    if let Some(seg) = fitting_xmp(meta.xmp) {
+        segs.push((0xE1, seg));
     }
     if let Some(icc) = meta.icc {
         // ICC.1 Annex B.4: "ICC_PROFILE\0", 1-based chunk number, chunk count
@@ -113,7 +139,7 @@ pub(crate) fn jpeg_app_segments(meta: &EncodeMeta) -> Result<Vec<(u8, Vec<u8>)>>
 /// An APP1 XMP payload (namespace + packet), refusing packets larger than one segment.
 pub(crate) fn xmp_segment(xmp: &str) -> Result<Vec<u8>> {
     let seg = [XMP_NS, xmp.as_bytes()].concat();
-    if seg.len() > 65_533 {
+    if xmp.len() > MAX_XMP_PACKET {
         return Err(Error::Encode("XMP larger than one APP1 segment (extended XMP not supported)".into()));
     }
     Ok(seg)
@@ -155,18 +181,10 @@ pub fn encode_jpeg(img: &EncodeImage, quality: u8, subsampling: ChromaSubsamplin
     if let Some(ppi) = meta.ppi.filter(|p| *p > 0) {
         enc.set_density(jpeg_encoder::PixelDensity::dpi(ppi));
     }
-    if let Some(exif) = meta.exif {
-        if exif.len() > 65_527 {
-            return Err(Error::Encode("EXIF larger than one APP1 segment (64 KiB)".into()));
-        }
+    if let Some(exif) = fitting_exif(meta.exif) {
         enc.add_exif_metadata(exif).map_err(e)?;
     }
-    if let Some(xmp) = meta.xmp {
-        let mut seg = XMP_NS.to_vec();
-        seg.extend_from_slice(xmp.as_bytes());
-        if seg.len() > 65_533 {
-            return Err(Error::Encode("XMP larger than one APP1 segment (extended XMP not supported)".into()));
-        }
+    if let Some(seg) = fitting_xmp(meta.xmp) {
         enc.add_app_segment(1, seg).map_err(e)?;
     }
     if let Some(icc) = meta.icc {

@@ -16,6 +16,8 @@ lightcraft-heif = { workspace = true, optional = true }
 serde = { workspace = true }
 bytemuck = { workspace = true }
 thiserror = { workspace = true }
+# warnings for metadata a JPEG can't hold (written without it)
+log = { workspace = true }
 rayon = { workspace = true, optional = true }
 image = { workspace = true, features = ["gif", "bmp"] }
 zune-jpeg = { workspace = true }
