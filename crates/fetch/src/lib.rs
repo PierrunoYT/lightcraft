@@ -274,10 +274,10 @@ fn validate_files(files: &[FileSpec<'_>]) -> Result<u64, DownloadError> {
     Ok(total)
 }
 
-/// The bearer token to send to `url`: only a non-empty one, only over https, and only to the host the download began
-/// at (`origin`), never to the host a redirect leads to.
-fn bearer<'a>(token: Option<&'a str>, url: &Url, origin: &str) -> Option<&'a str> {
-    token.map(str::trim).filter(|t| !t.is_empty() && url.tls && url.host == origin)
+/// The bearer token to send to `url`: only a non-empty one, only over https, and only to the host and port the
+/// download began at (`origin`), never to another host or another port of it a redirect leads to (issue #2140).
+fn bearer<'a>(token: Option<&'a str>, url: &Url, origin: (&str, u16)) -> Option<&'a str> {
+    token.map(str::trim).filter(|t| !t.is_empty() && url.tls && (url.host.as_str(), url.port) == origin)
 }
 
 /// A mirror for messages (no query string: it may hold a token).
@@ -347,7 +347,7 @@ fn fetch_file(f: &FileSpec<'_>, url: &str, dir: &Path, opts: &Options, cancel: &
     if fetched {
         let limits = Limits { connect: opts.connect_timeout, stall: opts.stall_timeout, cancel };
         let mut url = Url::parse(url).map_err(|e| Fail::NextMirror(e.to_string()))?;
-        let origin = url.host.clone();
+        let origin = (url.host.clone(), url.port);
         let mut redirects = 0;
         let mut resp = loop {
             let mut headers = vec![];
@@ -355,7 +355,7 @@ fn fetch_file(f: &FileSpec<'_>, url: &str, dir: &Path, opts: &Options, cancel: &
                 headers.push(("Range", format!("bytes={have}-")));
             }
             // a token for the configured host only (never sent on to a redirect's host)
-            if let Some(t) = bearer(opts.token_env.and_then(|name| std::env::var(name).ok()).as_deref(), &url, &origin) {
+            if let Some(t) = bearer(opts.token_env.and_then(|name| std::env::var(name).ok()).as_deref(), &url, (&origin.0, origin.1)) {
                 headers.push(("Authorization", format!("Bearer {t}")));
             }
             let r = http::get(&url, &headers, &limits).map_err(http_fail)?;
